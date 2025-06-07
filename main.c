@@ -7,7 +7,8 @@
 #include <stdlib.h>
 #include <float.h>
 #include <time.h>
-#include "wfc/wfc.h"
+#define WFC_IMPLEMENTATION
+#include "wfc.h"
 
 #define GRAVITY (Vector2){0.0f, 250.0f} // Pixels/s^2 (adjust as needed)
 #define COLLISION_ITERATIONS 8          // Number of iterations for collision resolution per tick
@@ -215,7 +216,22 @@ Vector2 collipoly_random_pnt(ColliPoly polygon) {
 typedef struct {
     ColliPoly collider;
     Color color;
+    float max_dist;
 } Wall;
+
+void wall_calculate_max_dist(Wall* wall) {
+    if (wall->collider.len < 1) {
+        wall->max_dist = 0.0f;
+        return;
+    };
+    wall->max_dist = 0.0f;
+    Vector2 first_vrt = wall->collider.items[0];
+    for (int i = 0; i < wall->collider.len; i++) {
+        float dist = Vector2Distance(first_vrt, wall->collider.items[i]);
+        if (dist > wall->max_dist)
+            wall->max_dist = dist;
+    }
+}
 
 Wall wall_new_va(Color color, int num_vertices, va_list args) {
 
@@ -229,6 +245,7 @@ Wall wall_new_va(Color color, int num_vertices, va_list args) {
     for (int i = 0; i < num_vertices; i++)
         res.collider.items[i] = va_arg(args, Vector2);
 
+    wall_calculate_max_dist(&res);
     return res;
 }
 
@@ -243,6 +260,7 @@ Wall wall_new_ptr(Color color, int num_vertices, Vector2* items) {
     for (int i = 0; i < num_vertices; i++)
         res.collider.items[i] = items[i];
 
+    wall_calculate_max_dist(&res);
     return res;
 }
 
@@ -268,6 +286,7 @@ Wall wall_new_rect(Color color, Vector2 corner_a, Vector2 corner_b) {
     res.collider.items[2] = botright;
     res.collider.items[3] = (Vector2){botright.x, topleft.y};
 
+    wall_calculate_max_dist(&res);
     return res;
 }
 
@@ -495,6 +514,7 @@ typedef struct {
     Color driver_color;
 
     bool standard;
+    float max_vrt_dist;
 } Cart;
 
 Cart cart_new_va(Color color, float mass_density, Vector2 driver_pos, float driver_radius, Color driver_color, bool standard, int num_vertices, va_list args) {
@@ -517,7 +537,7 @@ Cart cart_new_va(Color color, float mass_density, Vector2 driver_pos, float driv
     if (!res.collider.items)
         perror_exit("cart_new malloc");
 
-    for (int i = 0; i < num_vertices; i++)
+    for (int i = 0; i < num_vertices; i++) 
         res.collider.items[i] = va_arg(args, Vector2);
 
     float area = collipoly_area(res.collider);
@@ -528,6 +548,9 @@ Cart cart_new_va(Color color, float mass_density, Vector2 driver_pos, float driv
     for (int i = 0; i < num_vertices; i++) {
         res.collider.items[i].x -= res.pos.x;
         res.collider.items[i].y -= res.pos.y;
+        float dist = Vector2Length(res.collider.items[i]);
+        if (dist > res.max_vrt_dist)
+            res.max_vrt_dist = dist;
     }
 
     res.mom_inertia = fabsf(collipoly_mom_inertia(res.collider)) * mass_density * 3;
@@ -814,6 +837,7 @@ void cart_tick(Cart* cart, WallArr walls, int num_walls, float delta) {
     }
 
 
+    float step = Vector2Length(cart->vel) * delta;
     // --- 2. Collision Detection and Response ---
     // Multiple iterations can help stabilize complex collisions or stacking
     for (int iter = 0; iter < COLLISION_ITERATIONS; iter++) {
@@ -821,6 +845,9 @@ void cart_tick(Cart* cart, WallArr walls, int num_walls, float delta) {
         for (int i = 0; i < num_walls; i++) {
 
             ColliPoly wall_poly = walls.items[i].collider; // Assuming walls are static and their vertices are world-space
+            
+            float dist_cap = walls.items[i].max_dist + cart->max_vrt_dist + step * 2;
+            if (Vector2DistanceSqr(walls.items[i].collider.items[0], cart->pos) > dist_cap * dist_cap) continue;
 
             // Get the cart's current collider in world space
             ColliPoly cart_world_poly = cart_get_world_collider(cart);
@@ -968,19 +995,62 @@ void cart_draw_hands(Cart* cart, int pick, Item* pick_item) {
         DrawCircleV(lhaldle, 0.07, cart->color);
         DrawCircleV(rhaldle, 0.07, cart->color);
         if (pick != 0) {
-            DrawLineEx(driver, lhaldle, 0.02, cart->driver_color);
-            DrawCircleV(lhaldle, 0.02, cart->driver_color);
+            DrawLineEx(driver, lhaldle, 0.04, cart->driver_color);
+            DrawCircleV(lhaldle, 0.04, cart->driver_color);
         }
         if (pick != 1) {
-            DrawLineEx(driver, rhaldle, 0.02, cart->driver_color);
-            DrawCircleV(rhaldle, 0.02, cart->driver_color);
+            DrawLineEx(driver, rhaldle, 0.04, cart->driver_color);
+            DrawCircleV(rhaldle, 0.04, cart->driver_color);
         }
         if (pick != -1) {
-            DrawLineEx(driver, pick_item->pos, 0.02, cart->driver_color);
-            DrawCircleV(pick_item->pos, 0.02, cart->driver_color);
+            DrawLineEx(driver, pick_item->pos, 0.04, cart->driver_color);
+            DrawCircleV(pick_item->pos, 0.04, cart->driver_color);
         }
     }
     DrawCircleV(driver, cart->driver_radius, cart->driver_color);
+}
+
+void gen_plan(char* filename, WallArr* walls) {
+    Image wfc_image = LoadImage(filename);
+
+    Color* wfc_image_colors = malloc(wfc_image.width * wfc_image.height * 4);
+    if (!wfc_image_colors) perror_exit("wfc_image_colors malloc");
+
+    for (int i = 0; i < wfc_image.height; i++) {
+        for (int j = 0; j < wfc_image.width; j++) {
+            int idx = i * wfc_image.width + j;
+            wfc_image_colors[idx] = GetImageColor(wfc_image, i, j);
+        }
+    }
+
+    struct wfc_image image = {
+        .data = (unsigned char*)wfc_image_colors,
+        .width = wfc_image.width,
+        .height = wfc_image.height,
+        .component_cnt = 4,
+    };
+    struct wfc* wfc = wfc_overlapping(64, 64, &image, 3, 3, 1, 1, 1, 1);
+    if (!wfc) perror_exit("wfc_overlapping");
+
+    if (!wfc_run(wfc, -1)) perror_exit("wfc_run");
+
+    struct wfc_image* res_plan = wfc_output_image(wfc);
+
+    for (int i = 0; i < 64; i++) {
+        for (int j = 0; j < 64; j++) {
+            int idx = i * 64 + j;
+            if (res_plan->data[idx * 4] != 0) {
+                wallarr_push_malloc_rect(
+                    walls, GRAY, (Vector2){i, j}, (Vector2){i + 1, j + 1}
+                );
+            }
+        }
+    }
+
+    free(wfc_image_colors);
+    UnloadImage(wfc_image);
+    wfc_destroy(wfc);
+    wfc_img_destroy(res_plan);
 }
 
 int main() {
@@ -991,7 +1061,7 @@ int main() {
     srand(time(NULL));
 
     Cart main_cart = cart_new_goofy(
-        YELLOW, BLUE, Vector2Zero(), 4,
+        DARKBLUE, BLACK, Vector2Zero(), 4,
         (Vector2){ -0.15f, -0.27f },
         (Vector2){ -0.25f, 0.27f },
         (Vector2){ 0.25f, 0.27f },
@@ -999,38 +1069,7 @@ int main() {
     );
 
     WallArr walls = wallarr_new();
-    wallarr_push_malloc_rect(
-        &walls, GetRandomColor(),
-        (Vector2){ 0, 1 },
-        (Vector2){ 1, 2 }
-    );
-    wallarr_push_malloc_rect(
-        &walls, GetRandomColor(),
-        (Vector2){ -1, -1 },
-        (Vector2){ 0, 2 }
-    );
-    Vector2 cursor = { 0, -1 };
-    for (int i = 0; i < 4; i++) {
-        Vector2 old_cursor = cursor;
-        if (i % 4 == 0) {
-            cursor.x += i + 3;
-            cursor.y += 1;
-        } else if (i % 4 == 1) {
-            cursor.x -= 1;
-            cursor.y += i + 3;
-        } else if (i % 4 == 2) {
-            cursor.x -= i + 3;
-            cursor.y -= 1;
-        } else if (i % 4 == 3) {
-            cursor.x += 1;
-            cursor.y -= i + 3;
-        }
-        wallarr_push_malloc_rect(
-            &walls, GetRandomColor(),
-            old_cursor,
-            cursor
-        );
-    }
+    gen_plan("res/wfc.png", &walls);
 
     ItemArr items = itemarr_new();
     itemarr_push(&items, item_new_width(
@@ -1163,7 +1202,13 @@ int main() {
             for (int j = -1; j < diam * 2 + 1; j++) {
                 int posx = (int)cam.target.x - diam + i;
                 int posy = (int)cam.target.y - diam + j;
-                DrawRectangleV((Vector2){posx, posy}, (Vector2){1, 1}, (posx + posy) % 2 ? BLACK : (Color){50, 50, 50, 255});
+                DrawRectangleV(
+                    (Vector2){posx, posy},
+                    (Vector2){1, 1}, 
+                    (posx + posy) % 2 
+                        ? RAYWHITE 
+                        : LIGHTGRAY
+                );
             }
         }
 
