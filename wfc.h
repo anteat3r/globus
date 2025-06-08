@@ -1123,15 +1123,11 @@ int wfc_run(struct wfc *wfc, int max_collapse_cnt)
   int cell_idx = rand() % (wfc->output_height * wfc->output_width);
 
   while (1) {
-    print_progress(wfc->collapsed_cell_cnt);
-
     if (!wfc__collapse(wfc, cell_idx)) {
-      print_endprogress();
       return 0;
     }
 
     if (!wfc__propagate(wfc, cell_idx)) {
-      print_endprogress();
       return 0;
     }
 
@@ -1141,9 +1137,6 @@ int wfc_run(struct wfc *wfc, int max_collapse_cnt)
       break;
     }
   }
-
-  print_progress(wfc->collapsed_cell_cnt);
-  print_endprogress();
 
   return 1;
 }

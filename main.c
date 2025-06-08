@@ -29,6 +29,17 @@ void perror_exit(const char* msg) {
 }
 
 typedef struct {
+    int x;
+    int y;
+} IntVector2;
+
+typedef struct {
+    int x;
+    int y;
+    int edge;
+} IntEdge;
+
+typedef struct {
     Vector2* items;
     int len;
 } ColliPoly;
@@ -59,10 +70,8 @@ void collipoly_free(ColliPoly* poly) {
     }
 }
 
-#define NUM_COLORS 17
+#define NUM_COLORS 12
 Color colors[NUM_COLORS] = {
-    LIGHTGRAY,
-    GRAY,
     YELLOW,
     GOLD,
     ORANGE,
@@ -74,10 +83,7 @@ Color colors[NUM_COLORS] = {
     BLUE,
     PURPLE,
     VIOLET,
-    BEIGE,
-    WHITE,
     MAGENTA,
-    RAYWHITE 
 };
 
 Color GetRandomColor() {
@@ -201,14 +207,11 @@ Vector2 collipoly_random_pnt(ColliPoly polygon) {
             max_dist = dist;
     }
 
-    int cnt = 0;
     Vector2 res = { 0.0f, 0.0f };
     while (true) {
         res.x = (float)rand()/(float)(RAND_MAX/max_dist/2) - max_dist;
         res.y = (float)rand()/(float)(RAND_MAX/max_dist/2) - max_dist;
         if (collipoly_contains(polygon, res)) break;
-        cnt++;
-        if (cnt > 10) exit(0);
     };
     return res;
 }
@@ -383,18 +386,19 @@ typedef struct {
     float rot;
     float scale;
     float collision_radius;
+    float radius;
 } Item;
 
-Item item_new(Texture2D image, Vector2 pos, float rot, float scale, float col_rad) {
-    return (Item){ image, pos, rot, scale, col_rad };
+Item item_new(Texture2D image, Vector2 pos, float rot, float scale, float col_rad, float rad) {
+    return (Item){ image, pos, rot, scale, col_rad, rad };
 }
 
 void item_set_scale_from_width(Item* item, float n_width) {
     item->scale = n_width / item->image.width;
 }
 
-Item item_new_width(Texture2D image, Vector2 pos, float rot, float new_width, float col_rad) {
-    Item res = item_new(image, pos, rot, 0, col_rad);
+Item item_new_width(Texture2D image, Vector2 pos, float rot, float new_width, float col_rad, float rad) {
+    Item res = item_new(image, pos, rot, 0, col_rad, rad);
     item_set_scale_from_width(&res, new_width);
     return res;
 }
@@ -972,7 +976,7 @@ void cart_consume_item(Cart* cart, ItemArr* items, int index) {
         Vector2 vrt = cart->collider.items[i];
         padd_collider.items[i] = Vector2Subtract(
             vrt,
-            Vector2Scale(Vector2Normalize(vrt), item.collision_radius)
+            Vector2Scale(Vector2Normalize(vrt), item.radius)
         );
     }
 
@@ -1034,6 +1038,7 @@ void cart_draw_hands(Cart* cart, int pick, Item* pick_item) {
 
 #define MALL_WIDTH 64
 #define MALL_HEIGHT 64
+#define MALL_SECTIONS 7
 
 void gen_plan(char* filename, WallArr* walls, ItemArr* items) {
     Image wfc_image = LoadImage(filename);
@@ -1082,25 +1087,144 @@ void gen_plan(char* filename, WallArr* walls, ItemArr* items) {
                 mall_plan[(i-1) * MALL_WIDTH + (j)] == -1 || 
                 mall_plan[(i) * MALL_WIDTH + (j+1)] == -1 || 
                 mall_plan[(i) * MALL_WIDTH + (j-1)] == -1) continue; 
-            mall_plan[idx] = 1;
+            mall_plan[idx] = -2;
         }
     }
 
+    IntVector2 section_centers[MALL_SECTIONS];
+    for (int i = 0; i < MALL_SECTIONS; i++) {
+        section_centers[i] = (IntVector2){
+            GetRandomValue(0, MALL_WIDTH-1),
+            GetRandomValue(0, MALL_HEIGHT-1)
+        };
+    }
+
     Texture2D melon = LoadTexture("res/watermelon.png");
-    for (int i = 0; i < MALL_HEIGHT; i++) {
-        for (int j = 0; j < MALL_WIDTH; j++) {
+    Item section_items[MALL_SECTIONS] = {
+        item_new_width(melon, (Vector2){}, 0, 0.3, 0.5, 0.15),
+        item_new_width(melon, (Vector2){}, 0, 0.3, 0.5, -0.15),
+        item_new_width(melon, (Vector2){}, 0, 0.3, 0.5, -0.15),
+        item_new_width(melon, (Vector2){}, 0, 0.3, 0.5, -0.15),
+        item_new_width(melon, (Vector2){}, 0, 0.3, 0.5, -0.15),
+        item_new_width(melon, (Vector2){}, 0, 0.3, 0.5, -0.15),
+        item_new_width(melon, (Vector2){}, 0, 0.3, 0.5, -0.15),
+    };
+
+    while (true) {
+        IntVector2 queue[1000];
+        int queue_len = 1;
+        IntVector2 expl[1000];
+        int expl_len = 0;
+
+        for (int i = 1; i < MALL_HEIGHT-1; i++) {
+            for (int j = 1; j < MALL_WIDTH-1; j++) {
+                int idx = i * MALL_WIDTH + j;
+                if (mall_plan[idx] == 0) {
+                    queue[0] = (IntVector2){i, j};
+                    goto loopend;
+                }
+            }
+        }
+        break;
+        loopend: ;
+
+        float min_dist = FLT_MAX;
+        int min_section = 0;
+        for (int i = 0; i < MALL_SECTIONS; i++) {
+            float dist = Vector2Distance(
+                (Vector2){queue[0].x, queue[0].y},
+                (Vector2){section_centers[i].x, section_centers[i].y}
+            );
+            if (dist < min_dist) {
+                min_dist = dist;
+                min_section = i + 1;
+            }
+        }
+
+        IntEdge free_edges[1000];
+        int free_edges_len = 0;
+        while (queue_len > 0) {
+            IntVector2 pnt = queue[queue_len-1];
+            queue_len--;
+            for (int i = 0; i < expl_len; i++) {
+                IntVector2 expl_pnt = expl[i];
+                if (expl_pnt.x == pnt.x && expl_pnt.y == pnt.y)
+                    goto whileend;
+            }
+            mall_plan[pnt.x * MALL_WIDTH + pnt.y] = min_section;
+            expl[expl_len] = pnt;
+            expl_len++;
+
+            if (pnt.x < MALL_WIDTH-1 && mall_plan[(pnt.x+1) * MALL_WIDTH + (pnt.y)] == -1) {
+                free_edges[free_edges_len] = (IntEdge){pnt.x, pnt.y, 0};
+                free_edges_len++;
+            }
+            if (pnt.y > 0 && mall_plan[(pnt.x) * MALL_WIDTH + (pnt.y-1)] == -1) {
+                free_edges[free_edges_len] = (IntEdge){pnt.x, pnt.y, 1};
+                free_edges_len++;
+            }
+            if (pnt.x > 0 && mall_plan[(pnt.x-1) * MALL_WIDTH + (pnt.y)] == -1) {
+                free_edges[free_edges_len] = (IntEdge){pnt.x, pnt.y, 2};
+                free_edges_len++;
+            }
+            if (pnt.y < MALL_HEIGHT-1 && mall_plan[(pnt.x) * MALL_WIDTH + (pnt.y+1)] == -1) {
+                free_edges[free_edges_len] = (IntEdge){pnt.x, pnt.y, 3};
+                free_edges_len++;
+            }
+
+            if (pnt.x > 0 && mall_plan[(pnt.x-1) * MALL_WIDTH + (pnt.y)] == 0) {
+                queue[queue_len] = (IntVector2){pnt.x-1, pnt.y};
+                queue_len++;
+            }
+            if (pnt.y > 0 && mall_plan[(pnt.x) * MALL_WIDTH + (pnt.y-1)] == 0) {
+                queue[queue_len] = (IntVector2){pnt.x, pnt.y-1};
+                queue_len++;
+            }
+            if (pnt.x < MALL_WIDTH-1 && mall_plan[(pnt.x+1) * MALL_WIDTH + (pnt.y)] == 0) {
+                queue[queue_len] = (IntVector2){pnt.x+1, pnt.y};
+                queue_len++;
+            }
+            if (pnt.y < MALL_HEIGHT && mall_plan[(pnt.x) * MALL_WIDTH + (pnt.y+1)] == 0) {
+                queue[queue_len] = (IntVector2){pnt.x, pnt.y+1};
+                queue_len++;
+            }
+            whileend: ;
+        }
+
+        if (section_items[min_section - 1].radius > 0)
+        for (int i = 0; i < free_edges_len; i++) {
+            IntEdge edge = free_edges[GetRandomValue(0, free_edges_len-1)];
+            Vector2 offset = {0, 0};
+            if (edge.edge == 0) {
+                offset.x = 1;
+                offset.y = GetRandomValue(0, 1000) / 1000.0;
+            }
+            if (edge.edge == 1) {
+                offset.x = GetRandomValue(0, 1000) / 1000.0;
+            }
+            if (edge.edge == 2) {
+                offset.y = GetRandomValue(0, 1000) / 1000.0;
+            }
+            if (edge.edge == 3) {
+                offset.x = GetRandomValue(0, 1000) / 1000.0;
+                offset.y = 1;
+            }
+            Item item = section_items[min_section - 1];
+            item.pos = (Vector2){edge.x + offset.x, edge.y + offset.y};
+            itemarr_push(items, item);
+        }
+    }
+
+
+    for (int i = 1; i < MALL_HEIGHT-1; i++) {
+        for (int j = 1; j < MALL_WIDTH-1; j++) {
             int idx = i * MALL_WIDTH + j;
             int cell = mall_plan[idx];
-            if (cell == -1) continue;
+            if (cell < 0) continue;
             wallarr_push_malloc_rect(
-                walls, cell == 1 ? DARKGRAY : GRAY,
+                walls, cell == -2 ? BLACK : colors[cell],
                 (Vector2){i, j}, (Vector2){i+1, j+1}
             );
-            if (cell == 0) {
-                itemarr_push(items, item_new_width(
-                    melon, (Vector2){i, j}, 0, 0.3, 1
-                ));
-            }
         }
     }
 
@@ -1265,8 +1389,8 @@ int main() {
     main_cart = cart_new_goofy(
         DARKBLUE, BLUE, BLACK, Vector2Zero(), 4,
         (Vector2){ -0.15f, -0.27f },
-        (Vector2){ -0.15f, 0.27f },
-        (Vector2){ 0.15f, 0.27f },
+        (Vector2){ -0.25f, 0.27f },
+        (Vector2){ 0.25f, 0.27f },
         (Vector2){ 0.15f, -0.27f }
     );
 
