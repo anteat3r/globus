@@ -325,8 +325,15 @@ void wallarr_free_all(WallArr* crl) {
     crl->items = NULL;
 }
 
-void wallarr_draw(WallArr crl) {
+void wallarr_draw(WallArr crl, Vector2 topleft, Vector2 botright) {
     for (int i = 0; i < crl.len; i++) {
+        Wall wall = crl.items[i];
+        if (
+            wall.collider.items[0].x > botright.x + wall.max_dist ||
+            wall.collider.items[0].y > botright.y + wall.max_dist ||
+            wall.collider.items[0].x < topleft.x - wall.max_dist ||
+            wall.collider.items[0].y < topleft.y - wall.max_dist
+        ) continue;
         wall_draw(crl.items[i]);
     }
 }
@@ -456,10 +463,15 @@ void itemarr_free_all(ItemArr* crl) {
     crl->items = NULL;
 }
 
-void itemarr_draw(ItemArr crl, Vector2 offset, float rot) {
-    // printf("%d\n", crl.len);
+void itemarr_draw(ItemArr crl, Vector2 offset, float rot, Vector2 topleft, Vector2 botright) {
     for (int i = 0; i < crl.len; i++) {
-        // printf("%d\n", i);
+        Item item = crl.items[i];
+        if (
+            offset.x + item.pos.x > botright.x + item.collision_radius ||
+            offset.y + item.pos.y > botright.y + item.collision_radius ||
+            offset.x + item.pos.x < topleft.x - item.collision_radius ||
+            offset.y + item.pos.y < topleft.y - item.collision_radius 
+        ) continue;
         item_draw(crl.items[i], offset, rot);
     }
 }
@@ -480,7 +492,7 @@ void itemarr_push(ItemArr* crl, Item cr) {
 void itemarr_remove(ItemArr* crl, int index) {
     if (index >= crl->len) return;
     crl->len--;
-    for (int i = 0; i < crl->len; i++)
+    for (int i = index; i < crl->len; i++)
         crl->items[i] = crl->items[i+1];
 }
 
@@ -506,6 +518,7 @@ typedef struct {
     float mom_inertia;
 
     Color color;
+    Color sec_color;
 
     ItemArr items;
 
@@ -517,12 +530,13 @@ typedef struct {
     float max_vrt_dist;
 } Cart;
 
-Cart cart_new_va(Color color, float mass_density, Vector2 driver_pos, float driver_radius, Color driver_color, bool standard, int num_vertices, va_list args) {
+Cart cart_new_va(Color color, Color sec_color, float mass_density, Vector2 driver_pos, float driver_radius, Color driver_color, bool standard, int num_vertices, va_list args) {
     Cart res = {
         .collider = (ColliPoly){
             .len = num_vertices,
         },
         .color = color,
+        .sec_color = sec_color,
         .rot = 0.0f,
         .ang_vel = 0.0f,
         .vel = Vector2Zero(),
@@ -558,17 +572,17 @@ Cart cart_new_va(Color color, float mass_density, Vector2 driver_pos, float driv
     return res;
 }
 
-Cart cart_new_old(Color color, float mass_density, Vector2 driver_pos, float driver_radius, Color driver_color, bool standard, int num_vertices, ...) {
+Cart cart_new_old(Color color, Color sec_color, float mass_density, Vector2 driver_pos, float driver_radius, Color driver_color, bool standard, int num_vertices, ...) {
     va_list args;
     va_start(args, num_vertices);
-    Cart res = cart_new_va(color, mass_density, driver_pos, driver_radius, driver_color, standard, num_vertices, args);
+    Cart res = cart_new_va(color, sec_color, mass_density, driver_pos, driver_radius, driver_color, standard, num_vertices, args);
     va_end(args);
     return res;
 }
 
-Cart cart_new(Color color, Color driver_color, Vector2 pos) {
+Cart cart_new(Color color, Color sec_color, Color driver_color, Vector2 pos) {
     return cart_new_old(
-        color, 3,
+        color, sec_color, 3,
         Vector2Add(pos, (Vector2){ 0.0f, 0.3f }),
         .1, driver_color, true, 4,
         Vector2Add(pos, (Vector2){ -0.15f, -0.27f }),
@@ -578,12 +592,12 @@ Cart cart_new(Color color, Color driver_color, Vector2 pos) {
     );
 }
 
-Cart cart_new_goofy(Color color, Color driver_color, Vector2 pos, int num_vert, ...) {
+Cart cart_new_goofy(Color color, Color sec_color, Color driver_color, Vector2 pos, int num_vert, ...) {
     va_list args;
     va_start(args, num_vert);
     Cart res = cart_new_va(
-        color, 3,
-        Vector2Add(pos, (Vector2){ 0.0f, 0.3f }),
+        color, sec_color, 3,
+        Vector2Add(pos, (Vector2){ 0.0f, 0.35f }),
         .1, driver_color, true, num_vert, args
     );
     va_end(args);
@@ -931,7 +945,7 @@ void cart_tick(Cart* cart, WallArr walls, int num_walls, float delta) {
                 float j_magnitude = -(1.0f + RESTITUTION) * relative_velocity_normal / denominator;
 
                 // Impulse vector (applied to cart)
-                Vector2 impulse_vector = Vector2Scale(collision_info.normal, j_magnitude);
+                Vector2 impulse_vector = Vector2Scale(collision_info.normal, j_magnitude * 2);
                 // Apply impulse to the cart
                 // The rel_pos for cart_apply_impulse is r_cart
                 cart_apply_impulse(cart, r_cart, impulse_vector, delta);
@@ -972,9 +986,10 @@ void cart_consume_item(Cart* cart, ItemArr* items, int index) {
 }
 
 // -1 not pick, 0 left pick, 1 right pick
-void cart_draw(Cart* cart, int pick, Item* pick_item) {
+void cart_draw(Cart* cart, int pick, Item* pick_item, Vector2 topleft, Vector2 botright) {
     ColliPoly real_poly = cart_get_world_collider(cart);
 
+    DrawTriangleFan(real_poly.items, real_poly.len, cart->sec_color);
     for (int i = 0; i < real_poly.len; i++) {
         Vector2 p1 = real_poly.items[i];
         Vector2 p2 = real_poly.items[(i + 1) % real_poly.len];
@@ -982,35 +997,45 @@ void cart_draw(Cart* cart, int pick, Item* pick_item) {
         DrawCircleV(p1, 0.025, cart->color);
     }
     collipoly_free(&real_poly);
-    itemarr_draw(cart->items, cart->pos, cart->rot);
-
+    itemarr_draw(cart->items, cart->pos, cart->rot, topleft, botright);
 }
+
+#define ARM_WIDTH 0.08
+#define SHOUDLER_WIDTH 0.08
 
 void cart_draw_hands(Cart* cart, int pick, Item* pick_item) {
     Vector2 driver = Vector2Add(cart->pos, Vector2Rotate(cart->driver_pos, cart->rot));
     Vector2 lhaldle = Vector2Add(cart->pos, Vector2Rotate(cart->collider.items[1], cart->rot));
     Vector2 rhaldle = Vector2Add(cart->pos, Vector2Rotate(cart->collider.items[2], cart->rot));
+    Vector2 lshoulder = Vector2Add(cart->pos, Vector2Rotate(Vector2Add(cart->driver_pos, (Vector2){-cart->driver_radius*1.5, 0.00}), cart->rot));
+    Vector2 rshoulder = Vector2Add(cart->pos, Vector2Rotate(Vector2Add(cart->driver_pos, (Vector2){cart->driver_radius*1.5, 0.00}), cart->rot));
 
     if (cart->standard) {
         DrawCircleV(lhaldle, 0.07, cart->color);
         DrawCircleV(rhaldle, 0.07, cart->color);
         if (pick != 0) {
-            DrawLineEx(driver, lhaldle, 0.04, cart->driver_color);
+            DrawLineEx(lshoulder, lhaldle, ARM_WIDTH, cart->driver_color);
             DrawCircleV(lhaldle, 0.04, cart->driver_color);
         }
         if (pick != 1) {
-            DrawLineEx(driver, rhaldle, 0.04, cart->driver_color);
+            DrawLineEx(rshoulder, rhaldle, ARM_WIDTH, cart->driver_color);
             DrawCircleV(rhaldle, 0.04, cart->driver_color);
         }
         if (pick != -1) {
-            DrawLineEx(driver, pick_item->pos, 0.04, cart->driver_color);
+            DrawLineEx(pick == 1 ? rshoulder : lshoulder, pick_item->pos, ARM_WIDTH, cart->driver_color);
             DrawCircleV(pick_item->pos, 0.04, cart->driver_color);
         }
     }
     DrawCircleV(driver, cart->driver_radius, cart->driver_color);
+    DrawLineEx(lshoulder, rshoulder, SHOUDLER_WIDTH, cart->driver_color);
+    DrawCircleV(lshoulder, SHOUDLER_WIDTH/2, cart->driver_color);
+    DrawCircleV(rshoulder, SHOUDLER_WIDTH/2, cart->driver_color);
 }
 
-void gen_plan(char* filename, WallArr* walls) {
+#define MALL_WIDTH 64
+#define MALL_HEIGHT 64
+
+void gen_plan(char* filename, WallArr* walls, ItemArr* items) {
     Image wfc_image = LoadImage(filename);
 
     Color* wfc_image_colors = malloc(wfc_image.width * wfc_image.height * 4);
@@ -1029,203 +1054,243 @@ void gen_plan(char* filename, WallArr* walls) {
         .height = wfc_image.height,
         .component_cnt = 4,
     };
-    struct wfc* wfc = wfc_overlapping(64, 64, &image, 3, 3, 1, 1, 1, 1);
+    struct wfc* wfc = wfc_overlapping(MALL_WIDTH, MALL_HEIGHT, &image, 3, 3, 1, 1, 1, 1);
     if (!wfc) perror_exit("wfc_overlapping");
 
     if (!wfc_run(wfc, -1)) perror_exit("wfc_run");
 
     struct wfc_image* res_plan = wfc_output_image(wfc);
 
-    for (int i = 0; i < 64; i++) {
-        for (int j = 0; j < 64; j++) {
-            int idx = i * 64 + j;
-            if (res_plan->data[idx * 4] != 0) {
-                wallarr_push_malloc_rect(
-                    walls, GRAY, (Vector2){i, j}, (Vector2){i + 1, j + 1}
-                );
+    int* mall_plan = malloc(MALL_WIDTH * MALL_HEIGHT * sizeof(int));
+    if (!mall_plan) perror_exit("mall_plan malloc");
+
+    for (int i = 0; i < MALL_HEIGHT; i++) {
+        for (int j = 0; j < MALL_WIDTH; j++) {
+            int idx = i * MALL_WIDTH + j;
+            if (res_plan->data[idx * 4] != 0)
+                mall_plan[idx] = 0;
+            else
+                mall_plan[idx] = -1;
+        }
+    }
+
+    for (int i = 1; i < MALL_HEIGHT-1; i++) {
+        for (int j = 1; j < MALL_WIDTH-1; j++) {
+            int idx = i * MALL_WIDTH + j;
+            if (mall_plan[idx] == -1) continue;
+            if (mall_plan[(i+1) * MALL_WIDTH + (j)] == -1 ||
+                mall_plan[(i-1) * MALL_WIDTH + (j)] == -1 || 
+                mall_plan[(i) * MALL_WIDTH + (j+1)] == -1 || 
+                mall_plan[(i) * MALL_WIDTH + (j-1)] == -1) continue; 
+            mall_plan[idx] = 1;
+        }
+    }
+
+    Texture2D melon = LoadTexture("res/watermelon.png");
+    for (int i = 0; i < MALL_HEIGHT; i++) {
+        for (int j = 0; j < MALL_WIDTH; j++) {
+            int idx = i * MALL_WIDTH + j;
+            int cell = mall_plan[idx];
+            if (cell == -1) continue;
+            wallarr_push_malloc_rect(
+                walls, cell == 1 ? DARKGRAY : GRAY,
+                (Vector2){i, j}, (Vector2){i+1, j+1}
+            );
+            if (cell == 0) {
+                itemarr_push(items, item_new_width(
+                    melon, (Vector2){i, j}, 0, 0.3, 1
+                ));
             }
         }
     }
 
+    free(mall_plan);
     free(wfc_image_colors);
     UnloadImage(wfc_image);
     wfc_destroy(wfc);
     wfc_img_destroy(res_plan);
 }
 
+Cart main_cart;
+Camera2D cam;
+bool rot_follow;
+WallArr walls;
+bool dragging;
+int sel_vrt;
+int sel_wall;
+ItemArr items;
+int pick_side;
+int pick_item_idx;
+
+void DrawTickFrame() {
+    float delta = GetFrameTime();
+
+    if (IsKeyDown(KEY_K)) {
+        cart_apply_impulse_rotated(&main_cart, (Vector2){0.3f, 0.3f}, (Vector2){0.0f, 1.0f}, delta);
+    }
+
+    if (IsKeyDown(KEY_J)) {
+        cart_apply_impulse_rotated(&main_cart, (Vector2){-0.3f, 0.3f}, (Vector2){0.0f, 1.0f}, delta);
+    }
+
+    if (IsKeyDown(KEY_H)) {
+        cart_apply_impulse_rotated(&main_cart, (Vector2){-0.3f, 0.3f}, (Vector2){0.0f, -1.0f}, delta);
+    }
+
+    if (IsKeyDown(KEY_L)) {
+        cart_apply_impulse_rotated(&main_cart, (Vector2){0.3f, 0.3f}, (Vector2){0.0f, -1.0f}, delta);
+    }
+
+    if (IsKeyDown(KEY_O))
+        cam.zoom /= 1.01;
+
+    if (IsKeyDown(KEY_P))
+        cam.zoom *= 1.01;
+
+    if (IsKeyPressed(KEY_I))
+        rot_follow = !rot_follow;
+
+    Vector2 mouse = GetScreenToWorld2D(GetMousePosition(), cam);
+
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        bool set_idx = false;
+        for (int i = 0; i < walls.len; i++) {
+            Wall wall = walls.items[i];
+            for (int j = 0; j < wall.collider.len; j++) {
+                Vector2 vrt = wall.collider.items[j];
+                if (Vector2Distance(vrt, mouse) < 0.3) {
+                    if (sel_vrt == j && sel_wall == i) {
+                        dragging = true;
+                        break;
+                    }
+                    sel_vrt = j;
+                    sel_wall = i;
+                    set_idx = true;
+                    break;
+                }
+            }
+            if (set_idx)
+                break;
+        }
+    }
+
+
+    if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && dragging) {
+        dragging = false;
+    }
+
+    cart_tick(&main_cart, walls, walls.len, delta);
+
+    pick_item_idx = -1;
+    pick_side = -1;
+    float min_dist = FLT_MAX;
+    Vector2 driver = Vector2Add(main_cart.pos, Vector2Rotate(main_cart.driver_pos, main_cart.rot));
+    Vector2 lhaldle = Vector2Add(main_cart.pos, Vector2Rotate(main_cart.collider.items[1], main_cart.rot));
+    Vector2 rhaldle = Vector2Add(main_cart.pos, Vector2Rotate(main_cart.collider.items[2], main_cart.rot));
+    for (int i = 0; i < items.len; i++) {
+        Item item = items.items[i];
+
+        float ddist = Vector2Distance(item.pos, driver);
+
+        if (ddist < item.collision_radius + main_cart.driver_radius && ddist < min_dist) {
+            min_dist = ddist;
+            pick_item_idx = i;
+            if (Vector2Distance(item.pos, lhaldle) < Vector2Distance(item.pos, rhaldle))
+                pick_side = 0;
+            else
+                pick_side = 1;
+        }
+    }
+
+    if (IsKeyPressed(KEY_ENTER) && pick_side != -1) {
+        cart_consume_item(&main_cart, &items, pick_item_idx);
+        pick_item_idx = -1;
+        pick_side = -1;
+    }
+
+    cam.target = main_cart.pos;
+    if (rot_follow)
+        cam.rotation = -main_cart.rot * RAD2DEG;
+    else
+        cam.rotation = 0;
+    cam.offset = (Vector2){(float)GetScreenWidth()/2, (float)GetScreenHeight()/2};
+
+    Vector2 topleft = GetScreenToWorld2D((Vector2){0, 0}, cam);
+    Vector2 botright = GetScreenToWorld2D((Vector2){GetScreenWidth(), GetScreenHeight()}, cam);
+    int diam = Vector2Length(Vector2Subtract(topleft, botright)) / 2;
+
+    BeginDrawing();
+    ClearBackground(BLACK);
+    BeginMode2D(cam);
+
+
+    for (int i = -1; i < diam * 2 + 1; i++) {
+        for (int j = -1; j < diam * 2 + 1; j++) {
+            int posx = (int)cam.target.x - diam + i;
+            int posy = (int)cam.target.y - diam + j;
+            DrawRectangleV(
+                (Vector2){posx, posy},
+                (Vector2){1, 1}, 
+                (posx + posy) % 2 
+                    ? RAYWHITE 
+                    : LIGHTGRAY
+            );
+        }
+    }
+
+    wallarr_draw(walls, topleft, botright);
+
+    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && dragging) {
+        walls.items[sel_wall].collider.items[sel_vrt] = mouse;
+        wall_calculate_max_dist(walls.items + sel_wall);
+        DrawCircleV(mouse, 0.1, ORANGE);
+    }
+
+    cart_draw(&main_cart, pick_side, items.items + pick_item_idx, topleft, botright);
+    itemarr_draw(items, Vector2Zero(), 0, topleft, botright);
+    cart_draw_hands(&main_cart, pick_side, items.items + pick_item_idx);
+
+    EndMode2D();
+    DrawFPS(10, 10);
+    EndDrawing();
+}
+
 int main() {
     SetTraceLogLevel(LOG_WARNING);
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     InitWindow(800, 600, "Polygon Collision Test");
-    // SetTargetFPS(60);
+    SetTargetFPS(60);
     srand(time(NULL));
 
-    Cart main_cart = cart_new_goofy(
-        DARKBLUE, BLACK, Vector2Zero(), 4,
+    main_cart = cart_new_goofy(
+        DARKBLUE, BLUE, BLACK, Vector2Zero(), 4,
         (Vector2){ -0.15f, -0.27f },
-        (Vector2){ -0.25f, 0.27f },
-        (Vector2){ 0.25f, 0.27f },
+        (Vector2){ -0.15f, 0.27f },
+        (Vector2){ 0.15f, 0.27f },
         (Vector2){ 0.15f, -0.27f }
     );
 
-    WallArr walls = wallarr_new();
-    gen_plan("res/wfc.png", &walls);
+    items = itemarr_new();
+    walls = wallarr_new();
+    gen_plan("res/wfc.png", &walls, &items);
+    printf("%d\n", items.len);
 
-    ItemArr items = itemarr_new();
-    itemarr_push(&items, item_new_width(
-        LoadTexture("res/watermelon.png"),
-        (Vector2){3, -3},
-        0, .3, .3
-    ));
-    // printf("%d\n", items.items[0].image.id);
+    // for (int i = 0; i < 20; i++) {
+    //     itemarr_push(&items, item_new_width(
+    //         LoadTexture("res/watermelon.png"),
+    //         (Vector2){3 + i, -3},
+    //         0, .3, .6
+    //     ));
+    // }
 
-    Camera2D cam = {
+    cam = (Camera2D){
         (Vector2){(float)GetScreenWidth()/2, (float)GetScreenHeight()/2},
         (Vector2){0.0f, 0.0f},
         0, 100,
     };
 
-    bool rot_follow = false;
-
-    int sel_wall = -1;
-    int sel_vrt = -1;
-
-    bool dragging = false;
-    int pick_item_idx = -1;
-    int pick_side = -1;
-
     while (!WindowShouldClose()) {
-        float delta = GetFrameTime();
-
-        if (IsKeyDown(KEY_K)) {
-            cart_apply_impulse_rotated(&main_cart, (Vector2){0.3f, 0.3f}, (Vector2){0.0f, 1.0f}, delta);
-        }
-
-        if (IsKeyDown(KEY_J)) {
-            cart_apply_impulse_rotated(&main_cart, (Vector2){-0.3f, 0.3f}, (Vector2){0.0f, 1.0f}, delta);
-        }
-
-        if (IsKeyDown(KEY_H)) {
-            cart_apply_impulse_rotated(&main_cart, (Vector2){-0.3f, 0.3f}, (Vector2){0.0f, -1.0f}, delta);
-        }
-
-        if (IsKeyDown(KEY_L)) {
-            cart_apply_impulse_rotated(&main_cart, (Vector2){0.3f, 0.3f}, (Vector2){0.0f, -1.0f}, delta);
-        }
-
-        if (IsKeyDown(KEY_O))
-            cam.zoom /= 1.001;
-
-        if (IsKeyDown(KEY_P))
-            cam.zoom *= 1.001;
-
-        if (IsKeyPressed(KEY_I))
-            rot_follow = !rot_follow;
-
-        Vector2 mouse = GetScreenToWorld2D(GetMousePosition(), cam);
-
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-            bool set_idx = false;
-            for (int i = 0; i < walls.len; i++) {
-                Wall wall = walls.items[i];
-                for (int j = 0; j < wall.collider.len; j++) {
-                    Vector2 vrt = wall.collider.items[j];
-                    if (Vector2Distance(vrt, mouse) < 0.3) {
-                        if (sel_vrt == j && sel_wall == i) {
-                            dragging = true;
-                            break;
-                        }
-                        sel_vrt = j;
-                        sel_wall = i;
-                        set_idx = true;
-                        break;
-                    }
-                }
-                if (set_idx)
-                    break;
-            }
-        }
-
-
-        if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && dragging) {
-            dragging = false;
-        }
-
-        cart_tick(&main_cart, walls, walls.len, delta);
-
-        for (int i = 0; i < items.len; i++) {
-            Item item = items.items[i];
-            float min_dist = FLT_MAX;
-
-            pick_item_idx = -1;
-            pick_side = -1;
-
-            Vector2 driver = Vector2Add(main_cart.pos, Vector2Rotate(main_cart.driver_pos, main_cart.rot));
-            Vector2 lhaldle = Vector2Add(main_cart.pos, Vector2Rotate(main_cart.collider.items[1], main_cart.rot));
-            Vector2 rhaldle = Vector2Add(main_cart.pos, Vector2Rotate(main_cart.collider.items[2], main_cart.rot));
-
-            float ddist = Vector2Distance(item.pos, driver);
-
-            if (ddist < item.collision_radius + main_cart.driver_radius && ddist < min_dist) {
-                min_dist = ddist;
-                pick_item_idx = i;
-                if (Vector2Distance(item.pos, lhaldle) < Vector2Distance(item.pos, rhaldle))
-                    pick_side = 0;
-                else
-                    pick_side = 1;
-            }
-        }
-
-        if (IsKeyPressed(KEY_ENTER) && pick_side != -1) {
-            cart_consume_item(&main_cart, &items, pick_item_idx);
-            pick_item_idx = -1;
-            pick_side = -1;
-        }
-
-        cam.target = main_cart.pos;
-        if (rot_follow)
-            cam.rotation = -main_cart.rot * RAD2DEG;
-        else
-            cam.rotation = 0;
-        cam.offset = (Vector2){(float)GetScreenWidth()/2, (float)GetScreenHeight()/2};
-
-        Vector2 topleft = GetScreenToWorld2D((Vector2){0, 0}, cam);
-        Vector2 botright = GetScreenToWorld2D((Vector2){GetScreenWidth(), GetScreenHeight()}, cam);
-        int diam = Vector2Length(Vector2Subtract(topleft, botright)) / 2;
-
-        BeginDrawing();
-        ClearBackground(BLACK);
-        BeginMode2D(cam);
-
-
-        for (int i = -1; i < diam * 2 + 1; i++) {
-            for (int j = -1; j < diam * 2 + 1; j++) {
-                int posx = (int)cam.target.x - diam + i;
-                int posy = (int)cam.target.y - diam + j;
-                DrawRectangleV(
-                    (Vector2){posx, posy},
-                    (Vector2){1, 1}, 
-                    (posx + posy) % 2 
-                        ? RAYWHITE 
-                        : LIGHTGRAY
-                );
-            }
-        }
-
-        wallarr_draw(walls);
-
-        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && dragging) {
-            walls.items[sel_wall].collider.items[sel_vrt] = mouse;
-            DrawCircleV(mouse, 0.1, ORANGE);
-        }
-
-        cart_draw(&main_cart, pick_side, items.items + pick_item_idx);
-        itemarr_draw(items, Vector2Zero(), 0);
-        cart_draw_hands(&main_cart, pick_side, items.items + pick_item_idx);
-
-        EndMode2D();
-        DrawFPS(10, 10);
-        EndDrawing();
+        DrawTickFrame();
     }
 
     itemarr_free_all(&items);
