@@ -146,6 +146,10 @@ void wfc_init(struct wfc *wfc); // Resets wfc generation, wfc_run can be called 
 int wfc_run(struct wfc *wfc, int max_collapse_cnt);
 int wfc_export(struct wfc *wfc, const char *filename);
 void wfc_destroy(struct wfc *wfc);
+struct wfc_image *wfc_output_image(struct wfc *wfc);
+struct wfc_image *wfc_img_create(int width, int height, int component_cnt);
+struct wfc_image *wfc_img_copy(struct wfc_image *image);
+void wfc_img_destroy(struct wfc_image *image);
 
 #ifdef __cplusplus
 }
