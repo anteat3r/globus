@@ -389,20 +389,21 @@ static void DrawTickFrame(void) {
 
   if (IsKeyDown(KEY_A)) {
     cart_apply_force_rotated(&main_cart, (Vector2){0.25f, 0.27f},
-                             (Vector2){0.0f, -CART_PUSH_FORCE * 0.6f}, delta);
+                             (Vector2){0.0f, -CART_PUSH_FORCE * 0.9f}, delta);
     cart_apply_force_rotated(&main_cart, (Vector2){-0.25f, 0.27f},
-                             (Vector2){0.0f, CART_PUSH_FORCE * 0.2f}, delta);
-    cart_apply_force_rotated(&main_cart, (Vector2){0.0f, 0.27f},
-                             (Vector2){CART_PUSH_FORCE * 0.35f, 0.0f}, delta);
+                             (Vector2){0.0f, CART_PUSH_FORCE * 0.9f}, delta);
+    // cart_apply_force_rotated(&main_cart, (Vector2){0.0f, 0.27f},
+    // (Vector2){CART_PUSH_FORCE * 0.35f, 0.0f}, delta);
   }
 
   if (IsKeyDown(KEY_D)) {
     cart_apply_force_rotated(&main_cart, (Vector2){-0.25f, 0.27f},
-                             (Vector2){0.0f, -CART_PUSH_FORCE * 0.6f}, delta);
+                             (Vector2){0.0f, -CART_PUSH_FORCE * 0.9f}, delta);
     cart_apply_force_rotated(&main_cart, (Vector2){0.25f, 0.27f},
-                             (Vector2){0.0f, CART_PUSH_FORCE * 0.2f}, delta);
-    cart_apply_force_rotated(&main_cart, (Vector2){0.0f, 0.27f},
-                             (Vector2){-CART_PUSH_FORCE * 0.35f, 0.0f}, delta);
+                             (Vector2){0.0f, CART_PUSH_FORCE * 0.9f}, delta);
+    // cart_apply_force_rotated(&main_cart, (Vector2){0.0f, 0.27f},
+    //                          (Vector2){-CART_PUSH_FORCE * 0.35f, 0.0f},
+    //                          delta);
   }
 
   if (IsKeyDown(KEY_O))
