@@ -5,8 +5,8 @@
 #include "wall.h"
 #include <raylib.h>
 
-#define MALL_WIDTH 64
-#define MALL_HEIGHT 64
+#define MALL_WIDTH 24
+#define MALL_HEIGHT 24
 
 #define NUM_COLORS 4
 extern Color mall_colors[NUM_COLORS];
