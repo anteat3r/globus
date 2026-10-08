@@ -223,8 +223,8 @@ void cart_tick(Cart *cart, WallArr walls, int num_walls, float delta) {
   Vector2 f_total = Vector2Add(Vector2Scale(u_fwd, f_roll),
                                Vector2Add(F_lat_r_vec, F_lat_f_vec));
 
-  cart->vel = Vector2Add(cart->vel,
-                         Vector2Scale(f_total, (1.0f / cart->mass) * delta));
+  cart->vel =
+      Vector2Add(cart->vel, Vector2Scale(f_total, (1.0f / cart->mass) * delta));
   cart->ang_vel +=
       ((torque_wheels + torque_damping) / cart->mom_inertia) * delta;
 
@@ -275,9 +275,10 @@ void cart_tick(Cart *cart, WallArr walls, int num_walls, float delta) {
         if (vn < 0.0f) {
           float r_cross_n = (r_cart.x * n.y) - (r_cart.y * n.x);
           float inv_mass = (cart->mass > EPSILON) ? (1.0f / cart->mass) : 0.0f;
-          float inv_inertia_n = (cart->mom_inertia > EPSILON)
-                                    ? ((r_cross_n * r_cross_n) / cart->mom_inertia)
-                                    : 0.0f;
+          float inv_inertia_n =
+              (cart->mom_inertia > EPSILON)
+                  ? ((r_cross_n * r_cross_n) / cart->mom_inertia)
+                  : 0.0f;
           float Kn = inv_mass + inv_inertia_n;
 
           if (Kn > EPSILON) {
@@ -340,15 +341,18 @@ bool cart_collide_cart(Cart *c1, Cart *c2, Vector2 *out_bump_impulse,
   float inv_m2 = 1.0f / m2;
   float total_inv_m = inv_m1 + inv_m2;
 
-  c1->pos = Vector2Add(c1->pos, Vector2Scale(n, penetration * (inv_m1 / total_inv_m)));
-  c2->pos = Vector2Subtract(c2->pos, Vector2Scale(n, penetration * (inv_m2 / total_inv_m)));
+  c1->pos = Vector2Add(c1->pos,
+                       Vector2Scale(n, penetration * (inv_m1 / total_inv_m)));
+  c2->pos = Vector2Subtract(
+      c2->pos, Vector2Scale(n, penetration * (inv_m2 / total_inv_m)));
 
   Vector2 v_rel = Vector2Subtract(c1->vel, c2->vel);
   float vn = Vector2DotProduct(v_rel, n);
   if (vn >= 0.0f)
     return false;
 
-  // Punchy arcade bumper response: energetic restitution and bonus charging kick
+  // Punchy arcade bumper response: energetic restitution and bonus charging
+  // kick
   float restitution = 1.15f;
   float impact_speed = -vn;
   float boost = (impact_speed > 0.35f) ? 1.5f : 1.0f;
@@ -442,7 +446,7 @@ void cart_draw_hands(Cart *cart, int pick, Item *pick_item) {
     bool drew_pick_arm = false;
     if (pick != -1 && pick_item != NULL) {
       Vector2 pick_shoulder = (pick == 1) ? rshoulder : lshoulder;
-      if (Vector2Distance(pick_shoulder, pick_item->pos) <= 0.65f) {
+      if (Vector2Distance(pick_shoulder, pick_item->pos) <= 6.5f) {
         DrawLineEx(pick_shoulder, pick_item->pos, ARM_WIDTH,
                    cart->driver_color);
         DrawCircleV(pick_item->pos, 0.04, cart->driver_color);

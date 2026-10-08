@@ -42,9 +42,12 @@ static uint8_t host_grid_mask[MALL_GRID_MASK_SIZE] = {0};
 
 static ShoppingList local_shopping_list = {0};
 static ShoppingList remote_shopping_list = {0};
-static int winner = 0; // 0 = Ongoing race, 1 = Player 1 (Blue), 2 = Player 2 (Red)
+static int winner =
+    0; // 0 = Ongoing race, 1 = Player 1 (Blue), 2 = Player 2 (Red)
 static float winning_time = 0.0f;
 static bool rematch_requested = false;
+static const char *screenshot_path = NULL;
+static int screenshot_countdown = -1;
 
 static float LerpAngle(float a, float b, float t) {
   float diff = fmodf(b - a + PI, 2.0f * PI) - PI;
@@ -238,8 +241,7 @@ static void DrawTickFrame(void) {
           remote_target_rot = pkt.cart.rot;
           remote_target_ang_vel = pkt.cart.ang_vel;
           remote_pick_side = pkt.cart.pick_side;
-          remote_pick_pos =
-              (Vector2){pkt.cart.pick_pos_x, pkt.cart.pick_pos_y};
+          remote_pick_pos = (Vector2){pkt.cart.pick_pos_x, pkt.cart.pick_pos_y};
           remote_cart.mass = pkt.cart.mass;
         }
         break;
@@ -278,7 +280,8 @@ static void DrawTickFrame(void) {
         break;
 
       case PKT_GAME_OVER:
-        if (winner == 0 || winning_time == 0.0f || pkt.game_over.final_time > 0.0f) {
+        if (winner == 0 || winning_time == 0.0f ||
+            pkt.game_over.final_time > 0.0f) {
           winner = pkt.game_over.winner_id;
           winning_time = pkt.game_over.final_time;
           if (winner == (g_net.mode == NET_MODE_CLIENT ? 1 : 2)) {
@@ -317,7 +320,8 @@ static void DrawTickFrame(void) {
     DrawText(status_str, GetScreenWidth() / 2 - sw / 2,
              GetScreenHeight() / 2 - 20, 24, DARKBLUE);
 
-    const char *sub_str = "Waiting for game world init from host (Tailscale)...";
+    const char *sub_str =
+        "Waiting for game world init from host (Tailscale)...";
     int ssw = MeasureText(sub_str, 16);
     DrawText(sub_str, GetScreenWidth() / 2 - ssw / 2,
              GetScreenHeight() / 2 + 15, 16, GRAY);
@@ -358,11 +362,13 @@ static void DrawTickFrame(void) {
     };
     if (Vector2LengthSqr(left_stick) > 0.04f) {
       cart_apply_force_rotated(&main_cart, (Vector2){-0.25f, 0.27f},
-                               Vector2Scale(left_stick, CART_PUSH_FORCE), delta);
+                               Vector2Scale(left_stick, CART_PUSH_FORCE),
+                               delta);
     }
     if (Vector2LengthSqr(right_stick) > 0.04f) {
       cart_apply_force_rotated(&main_cart, (Vector2){0.25f, 0.27f},
-                               Vector2Scale(right_stick, CART_PUSH_FORCE), delta);
+                               Vector2Scale(right_stick, CART_PUSH_FORCE),
+                               delta);
     }
   }
 
@@ -409,32 +415,6 @@ static void DrawTickFrame(void) {
     rot_follow = !rot_follow;
 
   Vector2 mouse = GetScreenToWorld2D(GetMousePosition(), cam);
-
-  if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-    bool set_idx = false;
-    for (int i = 0; i < walls.len; i++) {
-      Wall wall = walls.items[i];
-      for (int j = 0; j < wall.collider.len; j++) {
-        Vector2 vrt = wall.collider.items[j];
-        if (Vector2Distance(vrt, mouse) < 0.3f) {
-          if (sel_vrt == j && sel_wall == i) {
-            dragging = true;
-            break;
-          }
-          sel_vrt = j;
-          sel_wall = i;
-          set_idx = true;
-          break;
-        }
-      }
-      if (set_idx)
-        break;
-    }
-  }
-
-  if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && dragging) {
-    dragging = false;
-  }
 
   // Local physics simulation
   cart_tick(&main_cart, walls, walls.len, delta);
@@ -553,12 +533,12 @@ static void DrawTickFrame(void) {
     cam.rotation = -main_cart.rot * RAD2DEG;
   else
     cam.rotation = 0.0f;
-  cam.offset =
-      (Vector2){(float)GetScreenWidth() / 2.0f, (float)GetScreenHeight() / 2.0f};
+  cam.offset = (Vector2){(float)GetScreenWidth() / 2.0f,
+                         (float)GetScreenHeight() / 2.0f};
 
   Vector2 topleft = GetScreenToWorld2D((Vector2){0, 0}, cam);
-  Vector2 botright =
-      GetScreenToWorld2D((Vector2){(float)GetScreenWidth(), (float)GetScreenHeight()}, cam);
+  Vector2 botright = GetScreenToWorld2D(
+      (Vector2){(float)GetScreenWidth(), (float)GetScreenHeight()}, cam);
 
   if (world_initialized &&
       (g_net.mode == NET_MODE_SINGLE ||
@@ -622,98 +602,50 @@ static void DrawTickFrame(void) {
 
   EndMode2D();
 
-  // --- COMPETITIVE SHOPPING HUD ---
+  // --- SHOPPING LIST HUD ---
   int my_id = (g_net.mode == NET_MODE_CLIENT ? 2 : 1);
   int opp_id = (my_id == 1 ? 2 : 1);
   Color my_dark_color = (my_id == 1) ? DARKBLUE : MAROON;
   Color opp_dark_color = (opp_id == 1) ? DARKBLUE : MAROON;
 
-  // --- LEFT HUD: LOCAL PLAYER SHOPPING LIST ("YOU") ---
-  float card_h = (float)GetScreenHeight() - 64.0f;
-  if (card_h < 200.0f)
-    card_h = 200.0f;
-  DrawRectangleRounded((Rectangle){12.0f, 48.0f, 76.0f, card_h}, 0.08f, 4,
-                       (Color){255, 255, 255, 225});
-  DrawRectangleRoundedLinesEx((Rectangle){12.0f, 48.0f, 76.0f, card_h}, 0.08f, 4,
-                              2.5f, my_dark_color);
+  float top_y = (g_net.mode == NET_MODE_SINGLE) ? 20.0f : 34.0f;
+  float spacing = 8.0f;
+  float avail_h = (float)GetScreenHeight() - top_y - 20.0f;
+  float item_height = (avail_h - spacing * (SHOPPING_LIST_MAX_LEN - 1)) /
+                      (float)SHOPPING_LIST_MAX_LEN;
+  if (item_height > 65.0f)
+    item_height = 65.0f;
+  if (item_height < 38.0f)
+    item_height = 38.0f;
 
-  DrawRectangleRounded((Rectangle){14.0f, 50.0f, 72.0f, 24.0f}, 0.15f, 4,
-                       my_dark_color);
-  const char *my_tag = (g_net.mode == NET_MODE_SINGLE)
-                           ? "LIST"
-                           : (my_id == 1 ? "YOU (P1)" : "YOU (P2)");
-  DrawText(my_tag,
-           (int)(14.0f + (72.0f - MeasureText(my_tag, 13)) * 0.5f), 55, 13,
-           WHITE);
-
-  const char *my_count_str = TextFormat("%d left", local_shopping_list.len);
-  DrawText(my_count_str,
-           (int)(14.0f + (72.0f - MeasureText(my_count_str, 12)) * 0.5f), 77,
-           12, my_dark_color);
-
-  float avail_h = card_h - 48.0f;
-  float item_slot =
-      fminf(46.0f, (avail_h - 10.0f) / (float)SHOPPING_LIST_MAX_LEN);
+  // Local player checklist (Left side, unboxed and big like before)
+  if (g_net.mode != NET_MODE_SINGLE) {
+    DrawText(TextFormat("YOU (%d)", local_shopping_list.len), 20, 12, 16,
+             my_dark_color);
+  }
   for (int i = 0; i < local_shopping_list.len; i++) {
-    int item_idx = local_shopping_list.items[i];
-    if (item_idx < 0 || item_idx >= NUM_ITEMS)
-      continue;
-    Item it = items_table[item_idx];
-    float cy = 96.0f + i * item_slot;
-    DrawRectangleRounded((Rectangle){20.0f, cy, 60.0f, item_slot - 4.0f}, 0.2f,
-                         4, (Color){240, 243, 248, 255});
-    DrawRectangleRoundedLinesEx(
-        (Rectangle){20.0f, cy, 60.0f, item_slot - 4.0f}, 0.2f, 4, 1.0f,
-        LIGHTGRAY);
-
-    float max_dim = fmaxf((float)it.image.width, (float)it.image.height);
-    if (max_dim > 0.0f) {
-      float scale = (item_slot - 10.0f) / max_dim;
-      float ix = 20.0f + (60.0f - it.image.width * scale) * 0.5f;
-      float iy = cy + ((item_slot - 4.0f) - it.image.height * scale) * 0.5f;
-      DrawTextureEx(it.image, (Vector2){ix, iy}, 0.0f, scale, WHITE);
-    }
+    Item item = items_table[local_shopping_list.items[i]];
+    float scale = item_height / (float)item.image.height;
+    DrawTextureEx(item.image,
+                  (Vector2){20, top_y + (item_height + spacing) * i}, 0.0f,
+                  scale, WHITE);
   }
 
-  // --- RIGHT HUD: OPPONENT SHOPPING LIST ("OPPONENT") ---
+  // Opponent checklist (Right side, multiplayer only)
   if (g_net.mode != NET_MODE_SINGLE && has_remote_cart) {
-    float rx = (float)GetScreenWidth() - 88.0f;
-    DrawRectangleRounded((Rectangle){rx, 48.0f, 76.0f, card_h}, 0.08f, 4,
-                         (Color){255, 255, 255, 225});
-    DrawRectangleRoundedLinesEx((Rectangle){rx, 48.0f, 76.0f, card_h}, 0.08f, 4,
-                                2.5f, opp_dark_color);
-
-    DrawRectangleRounded((Rectangle){rx + 2.0f, 50.0f, 72.0f, 24.0f}, 0.15f,
-                         4, opp_dark_color);
-    const char *opp_tag = (opp_id == 1 ? "OPP (P1)" : "OPP (P2)");
-    DrawText(opp_tag,
-             (int)(rx + 2.0f + (72.0f - MeasureText(opp_tag, 13)) * 0.5f), 55,
-             13, WHITE);
-
-    const char *opp_count_str = TextFormat("%d left", remote_shopping_list.len);
-    DrawText(opp_count_str,
-             (int)(rx + 2.0f + (72.0f - MeasureText(opp_count_str, 12)) * 0.5f),
-             77, 12, opp_dark_color);
+    const char *opp_hdr = TextFormat("OPPONENT (%d)", remote_shopping_list.len);
+    int opp_hdr_w = MeasureText(opp_hdr, 16);
+    DrawText(opp_hdr, GetScreenWidth() - opp_hdr_w - 20, 12, 16,
+             opp_dark_color);
 
     for (int i = 0; i < remote_shopping_list.len; i++) {
-      int item_idx = remote_shopping_list.items[i];
-      if (item_idx < 0 || item_idx >= NUM_ITEMS)
-        continue;
-      Item it = items_table[item_idx];
-      float cy = 96.0f + i * item_slot;
-      DrawRectangleRounded((Rectangle){rx + 8.0f, cy, 60.0f, item_slot - 4.0f},
-                           0.2f, 4, (Color){248, 240, 240, 255});
-      DrawRectangleRoundedLinesEx(
-          (Rectangle){rx + 8.0f, cy, 60.0f, item_slot - 4.0f}, 0.2f, 4, 1.0f,
-          LIGHTGRAY);
-
-      float max_dim = fmaxf((float)it.image.width, (float)it.image.height);
-      if (max_dim > 0.0f) {
-        float scale = (item_slot - 10.0f) / max_dim;
-        float ix = rx + 8.0f + (60.0f - it.image.width * scale) * 0.5f;
-        float iy = cy + ((item_slot - 4.0f) - it.image.height * scale) * 0.5f;
-        DrawTextureEx(it.image, (Vector2){ix, iy}, 0.0f, scale, WHITE);
-      }
+      Item opp_item = items_table[remote_shopping_list.items[i]];
+      float scale = item_height / (float)opp_item.image.height;
+      float drawn_w = (float)opp_item.image.width * scale;
+      float opp_x = (float)GetScreenWidth() - drawn_w - 20.0f;
+      DrawTextureEx(opp_item.image,
+                    (Vector2){opp_x, top_y + (item_height + spacing) * i}, 0.0f,
+                    scale, WHITE);
     }
   }
 
@@ -722,8 +654,8 @@ static void DrawTickFrame(void) {
     float badge_w = 360.0f;
     float badge_h = 44.0f;
     float badge_x = ((float)GetScreenWidth() - badge_w) * 0.5f;
-    DrawRectangleRounded((Rectangle){badge_x, 8.0f, badge_w, badge_h}, 0.25f,
-                         4, (Color){255, 255, 255, 230});
+    DrawRectangleRounded((Rectangle){badge_x, 8.0f, badge_w, badge_h}, 0.25f, 4,
+                         (Color){255, 255, 255, 230});
     DrawRectangleRoundedLinesEx((Rectangle){badge_x, 8.0f, badge_w, badge_h},
                                 0.25f, 4, 2.0f, DARKGRAY);
 
@@ -744,12 +676,13 @@ static void DrawTickFrame(void) {
         int behind = local_shopping_list.len - remote_shopping_list.len;
         const char *behind_str = TextFormat("OPPONENT LEADING by %d item%s!",
                                             behind, behind > 1 ? "s" : "");
-        DrawText(behind_str,
-                 (int)(badge_x + (badge_w - MeasureText(behind_str, 13)) * 0.5f),
-                 32, 13, MAROON);
+        DrawText(
+            behind_str,
+            (int)(badge_x + (badge_w - MeasureText(behind_str, 13)) * 0.5f), 32,
+            13, MAROON);
       } else {
-        const char *tied_str = TextFormat("TIED RACE! (%d items each)",
-                                          local_shopping_list.len);
+        const char *tied_str =
+            TextFormat("TIED RACE! (%d items each)", local_shopping_list.len);
         DrawText(tied_str,
                  (int)(badge_x + (badge_w - MeasureText(tied_str, 13)) * 0.5f),
                  32, 13, DARKBLUE);
@@ -770,25 +703,21 @@ static void DrawTickFrame(void) {
     float badge_x = ((float)GetScreenWidth() - badge_w) * 0.5f;
     DrawRectangleRounded((Rectangle){badge_x, 8.0f, badge_w, 36.0f}, 0.25f, 4,
                          (Color){255, 255, 255, 230});
-    DrawRectangleRoundedLinesEx((Rectangle){badge_x, 8.0f, badge_w, 36.0f}, 0.25f,
-                                4, 1.5f, DARKBLUE);
-    const char *wait_str = TextFormat(
-        "HOSTING (port %d) - Waiting for Player 2 to join...", g_net.remote_port);
+    DrawRectangleRoundedLinesEx((Rectangle){badge_x, 8.0f, badge_w, 36.0f},
+                                0.25f, 4, 1.5f, DARKBLUE);
+    const char *wait_str =
+        TextFormat("HOSTING (port %d) - Waiting for Player 2 to join...",
+                   g_net.remote_port);
     DrawText(wait_str,
              (int)(badge_x + (badge_w - MeasureText(wait_str, 15)) * 0.5f), 18,
              15, DARKBLUE);
   } else {
-    // Singleplayer
-    float badge_w = 200.0f;
-    float badge_x = ((float)GetScreenWidth() - badge_w) * 0.5f;
-    DrawRectangleRounded((Rectangle){badge_x, 8.0f, badge_w, 34.0f}, 0.25f, 4,
-                         (Color){255, 255, 255, 230});
-    DrawRectangleRoundedLinesEx((Rectangle){badge_x, 8.0f, badge_w, 34.0f}, 0.25f,
-                                4, 1.5f, DARKBLUE);
-    const char *time_str = TextFormat("TIME: %.3f s", ela_time);
-    DrawText(time_str,
-             (int)(badge_x + (badge_w - MeasureText(time_str, 18)) * 0.5f), 16,
-             18, DARKBLUE);
+    // Singleplayer timer (original bottom-right position and style)
+    const char *string = TextFormat("%.3f", ela_time);
+    const char *string_zeros = TextFormat("%.3f", floorf(ela_time));
+    int string_width_zeros = MeasureText(string_zeros, 30);
+    DrawText(string, GetScreenWidth() - string_width_zeros - 10,
+             GetScreenHeight() - 40, 30, BLACK);
   }
 
   // --- GAME OVER / VICTORY / DEFEAT MODAL ---
@@ -834,7 +763,8 @@ static void DrawTickFrame(void) {
       DrawText(sub, (int)(mx + (mw - MeasureText(sub, 17)) * 0.5f),
                (int)(my + 72), 17, sub_col);
 
-      const char *t_str = TextFormat("Winning Time: %.3f seconds", winning_time);
+      const char *t_str =
+          TextFormat("Winning Time: %.3f seconds", winning_time);
       DrawText(t_str, (int)(mx + (mw - MeasureText(t_str, 20)) * 0.5f),
                (int)(my + 112), 20, BLACK);
 
@@ -851,6 +781,15 @@ static void DrawTickFrame(void) {
   }
 
   EndDrawing();
+
+  if (screenshot_path) {
+    if (screenshot_countdown > 0) {
+      screenshot_countdown--;
+    } else if (screenshot_countdown == 0) {
+      TakeScreenshot(screenshot_path);
+      screenshot_countdown = -2;
+    }
+  }
 }
 
 int main(int argc, char **argv) {
@@ -874,20 +813,28 @@ int main(int argc, char **argv) {
       if (i + 1 < argc && argv[i + 1][0] != '-') {
         port = atoi(argv[++i]);
       }
+    } else if (strcmp(argv[i], "--screenshot") == 0) {
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        screenshot_path = argv[++i];
+        screenshot_countdown = 5;
+      }
     } else if (strcmp(argv[i], "--help") == 0) {
       printf("gloBUS - Shopping Cart Simulator\n");
       printf("Usage:\n");
       printf("  ./main                      Singleplayer\n");
-      printf("  ./main --host [port]        Host multiplayer game (default: %d)\n",
-             DEFAULT_NET_PORT);
+      printf(
+          "  ./main --host [port]        Host multiplayer game (default: %d)\n",
+          DEFAULT_NET_PORT);
       printf("  ./main --join <IP> [port]   Join game over Tailscale / LAN\n");
+      printf("  ./main --screenshot <file>  Save screenshot after a few frames "
+             "and exit\n");
       return 0;
     }
   }
 
   if (mode == NET_MODE_CLIENT && !join_ip) {
-    fprintf(stderr,
-            "Error: --join requires host IP address (e.g. ./main --join 100.x.y.z)\n");
+    fprintf(stderr, "Error: --join requires host IP address (e.g. ./main "
+                    "--join 100.x.y.z)\n");
     return 1;
   }
 
@@ -945,7 +892,8 @@ int main(int argc, char **argv) {
   }
 
   cam = (Camera2D){
-      (Vector2){(float)GetScreenWidth() / 2.0f, (float)GetScreenHeight() / 2.0f},
+      (Vector2){(float)GetScreenWidth() / 2.0f,
+                (float)GetScreenHeight() / 2.0f},
       (Vector2){0.0f, 0.0f},
       0.0f,
       100.0f,
@@ -953,6 +901,9 @@ int main(int argc, char **argv) {
 
   while (!WindowShouldClose()) {
     DrawTickFrame();
+    if (screenshot_path && screenshot_countdown == -2) {
+      break;
+    }
   }
 
   cleanup_game_world();
