@@ -44,12 +44,14 @@ typedef struct {
   char player_name[16];
 } PktHello;
 
+#define NET_GRID_MASK_SIZE 512
+
 typedef struct {
   PktHeader header;
   uint32_t seed;
   uint8_t shopping_list_count;
   int16_t shopping_list[SHOPPING_LIST_MAX_LEN];
-  uint8_t grid_mask[128];
+  uint8_t grid_mask[NET_GRID_MASK_SIZE];
 } PktInit;
 
 typedef struct {
@@ -109,7 +111,7 @@ typedef union {
   PktPingPong ping;
   PktBump bump;
   PktGameOver game_over;
-  uint8_t raw[512];
+  uint8_t raw[1024];
 } NetPacket;
 
 typedef struct {

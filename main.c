@@ -44,6 +44,7 @@ static ShoppingList local_shopping_list = {0};
 static ShoppingList remote_shopping_list = {0};
 static int winner = 0; // 0 = Ongoing race, 1 = Player 1 (Blue), 2 = Player 2 (Red)
 static float winning_time = 0.0f;
+static bool rematch_requested = false;
 
 static float LerpAngle(float a, float b, float t) {
   float diff = fmodf(b - a + PI, 2.0f * PI) - PI;
@@ -87,6 +88,7 @@ static void init_game_world(uint32_t seed, const uint8_t *in_grid_mask) {
   winning_time = 0.0f;
   race_start_time = 0.0f;
   ela_time = 0.0f;
+  rematch_requested = false;
   world_initialized = true;
 }
 
@@ -105,6 +107,60 @@ static void apply_remote_shopping_list(const PktInit *init) {
   winning_time = 0.0f;
   race_start_time = 0.0f;
   ela_time = 0.0f;
+  rematch_requested = false;
+}
+
+static void cleanup_game_world(void) {
+  if (world_initialized) {
+    island_shelfarr_free(&shelves);
+    island_posterarr_free(&posters);
+    itemarr_free_all(&items);
+    wallarr_free_all(&walls);
+    itemarr_free_all(&main_cart.items);
+    main_cart.mass = main_cart.base_mass;
+    main_cart.mom_inertia = main_cart.base_mom_inertia;
+    if (g_net.mode != NET_MODE_SINGLE) {
+      itemarr_free_all(&remote_cart.items);
+      remote_cart.mass = remote_cart.base_mass;
+      remote_cart.mom_inertia = remote_cart.base_mom_inertia;
+    }
+    world_initialized = false;
+  }
+}
+
+static void restart_match(void) {
+  if (g_net.mode == NET_MODE_SINGLE) {
+    cleanup_game_world();
+    main_cart.pos = (Vector2){10.0f, 10.0f};
+    main_cart.vel = Vector2Zero();
+    main_cart.rot = 0.0f;
+    main_cart.ang_vel = 0.0f;
+    init_game_world((uint32_t)time(NULL), NULL);
+  } else if (g_net.mode == NET_MODE_HOST) {
+    cleanup_game_world();
+    main_cart.pos = (Vector2){9.5f, 10.0f};
+    main_cart.vel = Vector2Zero();
+    main_cart.rot = 0.0f;
+    main_cart.ang_vel = 0.0f;
+    remote_cart.pos = (Vector2){10.5f, 10.0f};
+    remote_cart.vel = Vector2Zero();
+    remote_cart.rot = 0.0f;
+    remote_cart.ang_vel = 0.0f;
+    remote_target_pos = remote_cart.pos;
+    remote_target_vel = Vector2Zero();
+    remote_target_rot = 0.0f;
+    remote_target_ang_vel = 0.0f;
+    remote_pick_side = -1;
+
+    uint32_t new_seed = (uint32_t)time(NULL);
+    init_game_world(new_seed, NULL);
+    if (g_net.state == NET_STATE_CONNECTED) {
+      net_send_init(new_seed, shopping_list, shopping_list_len, host_grid_mask);
+    }
+  } else if (g_net.mode == NET_MODE_CLIENT) {
+    rematch_requested = true;
+    net_send_hello();
+  }
 }
 
 static void DrawTickFrame(void) {
@@ -134,23 +190,19 @@ static void DrawTickFrame(void) {
       switch (pkt.header.type) {
       case PKT_HELLO:
         if (g_net.mode == NET_MODE_HOST) {
-          net_send_init(net_seed, shopping_list, shopping_list_len,
-                        host_grid_mask);
+          if (winner != 0) {
+            restart_match();
+          } else {
+            net_send_init(net_seed, shopping_list, shopping_list_len,
+                          host_grid_mask);
+          }
           g_net.state = NET_STATE_CONNECTING;
         }
         break;
 
       case PKT_INIT:
         if (g_net.mode == NET_MODE_CLIENT) {
-          if (world_initialized) {
-            island_shelfarr_free(&shelves);
-            island_posterarr_free(&posters);
-            itemarr_free_all(&items);
-            wallarr_free_all(&walls);
-            itemarr_free_all(&main_cart.items);
-            itemarr_free_all(&remote_cart.items);
-            world_initialized = false;
-          }
+          cleanup_game_world();
           init_game_world(pkt.init.seed, pkt.init.grid_mask);
           apply_remote_shopping_list(&pkt.init);
           main_cart.pos = (Vector2){10.5f, 10.0f};
@@ -163,6 +215,9 @@ static void DrawTickFrame(void) {
           remote_cart.ang_vel = 0.0f;
           remote_target_pos = remote_cart.pos;
           remote_target_vel = Vector2Zero();
+          remote_target_rot = 0.0f;
+          remote_target_ang_vel = 0.0f;
+          remote_pick_side = -1;
           has_remote_cart = true;
           net_send_ready();
           g_net.state = NET_STATE_CONNECTED;
@@ -210,19 +265,25 @@ static void DrawTickFrame(void) {
           if (found_idx != -1) {
             Item picked = cart_consume_item(&remote_cart, &items, found_idx);
             shopping_list_consume(&remote_shopping_list, picked);
+          } else {
+            Item dummy = {.image = (Texture2D){.id = pkt.pick.texture_id}};
+            shopping_list_consume(&remote_shopping_list, dummy);
+          }
 
-            if (remote_shopping_list.len == 0 && winner == 0) {
-              winner = (g_net.mode == NET_MODE_CLIENT ? 1 : 2);
-              winning_time = ela_time;
-            }
+          if (remote_shopping_list.len == 0 && winner == 0) {
+            winner = (g_net.mode == NET_MODE_CLIENT ? 1 : 2);
+            winning_time = ela_time;
           }
         }
         break;
 
       case PKT_GAME_OVER:
-        if (winner == 0) {
+        if (winner == 0 || winning_time == 0.0f || pkt.game_over.final_time > 0.0f) {
           winner = pkt.game_over.winner_id;
           winning_time = pkt.game_over.final_time;
+          if (winner == (g_net.mode == NET_MODE_CLIENT ? 1 : 2)) {
+            remote_shopping_list.len = 0;
+          }
         }
         break;
 
@@ -428,17 +489,43 @@ static void DrawTickFrame(void) {
   bool pick_pressed = IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE) ||
                       IsKeyPressed(KEY_E) ||
                       IsGamepadButtonPressed(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN);
-  if (pick_pressed && pick_side != -1 && pick_item_idx >= 0 &&
+  if (winner == 0 && pick_pressed && pick_side != -1 && pick_item_idx >= 0 &&
       pick_item_idx < items.len) {
     Item picked = items.items[pick_item_idx];
     cart_consume_item(&main_cart, &items, pick_item_idx);
+
+    bool consumed = shopping_list_consume(&local_shopping_list, picked);
+    if (consumed) {
+      shopping_list_len = local_shopping_list.len;
+      for (int i = 0; i < local_shopping_list.len; i++) {
+        shopping_list[i] = local_shopping_list.items[i];
+      }
+    }
 
     if (g_net.mode != NET_MODE_SINGLE) {
       net_send_item_pick(picked.image.id, picked.pos,
                          g_net.mode == NET_MODE_HOST ? 0 : 1);
     }
+
+    if (local_shopping_list.len == 0 && winner == 0) {
+      winner = (g_net.mode == NET_MODE_CLIENT ? 2 : 1);
+      winning_time = ela_time;
+      if (g_net.mode != NET_MODE_SINGLE) {
+        net_send_game_over((uint8_t)winner, winning_time);
+      }
+    }
+
     pick_item_idx = -1;
     pick_side = -1;
+  }
+
+  // Rematch / Reset hotkey (R key or Gamepad Start / Y)
+  bool rematch_pressed =
+      IsKeyPressed(KEY_R) ||
+      IsGamepadButtonPressed(0, GAMEPAD_BUTTON_MIDDLE_RIGHT) ||
+      IsGamepadButtonPressed(0, GAMEPAD_BUTTON_RIGHT_FACE_UP);
+  if (rematch_pressed) {
+    restart_match();
   }
 
   // Stream local cart state to network
@@ -473,8 +560,15 @@ static void DrawTickFrame(void) {
   Vector2 botright =
       GetScreenToWorld2D((Vector2){(float)GetScreenWidth(), (float)GetScreenHeight()}, cam);
 
-  if (shopping_list_len > 0) {
-    ela_time = (float)GetTime();
+  if (world_initialized &&
+      (g_net.mode == NET_MODE_SINGLE ||
+       (g_net.state == NET_STATE_CONNECTED && has_remote_cart))) {
+    if (race_start_time == 0.0f) {
+      race_start_time = (float)GetTime();
+    }
+    if (winner == 0) {
+      ela_time = (float)GetTime() - race_start_time;
+    }
   }
 
   BeginDrawing();
@@ -528,47 +622,232 @@ static void DrawTickFrame(void) {
 
   EndMode2D();
 
-  // Shopping list HUD
-  float item_height = (GetScreenHeight() - 20 * (SHOPPING_LIST_MAX_LEN + 1)) /
-                      (float)SHOPPING_LIST_MAX_LEN;
-  for (int i = 0; i < shopping_list_len; i++) {
-    Item item = items_table[shopping_list[i]];
-    float scale = item_height / (float)item.image.height;
-    DrawTextureEx(item.image, (Vector2){20, 20 + item_height * i + 20 * i}, 0.0f,
-                  scale, WHITE);
+  // --- COMPETITIVE SHOPPING HUD ---
+  int my_id = (g_net.mode == NET_MODE_CLIENT ? 2 : 1);
+  int opp_id = (my_id == 1 ? 2 : 1);
+  Color my_dark_color = (my_id == 1) ? DARKBLUE : MAROON;
+  Color opp_dark_color = (opp_id == 1) ? DARKBLUE : MAROON;
+
+  // --- LEFT HUD: LOCAL PLAYER SHOPPING LIST ("YOU") ---
+  float card_h = (float)GetScreenHeight() - 64.0f;
+  if (card_h < 200.0f)
+    card_h = 200.0f;
+  DrawRectangleRounded((Rectangle){12.0f, 48.0f, 76.0f, card_h}, 0.08f, 4,
+                       (Color){255, 255, 255, 225});
+  DrawRectangleRoundedLinesEx((Rectangle){12.0f, 48.0f, 76.0f, card_h}, 0.08f, 4,
+                              2.5f, my_dark_color);
+
+  DrawRectangleRounded((Rectangle){14.0f, 50.0f, 72.0f, 24.0f}, 0.15f, 4,
+                       my_dark_color);
+  const char *my_tag = (g_net.mode == NET_MODE_SINGLE)
+                           ? "LIST"
+                           : (my_id == 1 ? "YOU (P1)" : "YOU (P2)");
+  DrawText(my_tag,
+           (int)(14.0f + (72.0f - MeasureText(my_tag, 13)) * 0.5f), 55, 13,
+           WHITE);
+
+  const char *my_count_str = TextFormat("%d left", local_shopping_list.len);
+  DrawText(my_count_str,
+           (int)(14.0f + (72.0f - MeasureText(my_count_str, 12)) * 0.5f), 77,
+           12, my_dark_color);
+
+  float avail_h = card_h - 48.0f;
+  float item_slot =
+      fminf(46.0f, (avail_h - 10.0f) / (float)SHOPPING_LIST_MAX_LEN);
+  for (int i = 0; i < local_shopping_list.len; i++) {
+    int item_idx = local_shopping_list.items[i];
+    if (item_idx < 0 || item_idx >= NUM_ITEMS)
+      continue;
+    Item it = items_table[item_idx];
+    float cy = 96.0f + i * item_slot;
+    DrawRectangleRounded((Rectangle){20.0f, cy, 60.0f, item_slot - 4.0f}, 0.2f,
+                         4, (Color){240, 243, 248, 255});
+    DrawRectangleRoundedLinesEx(
+        (Rectangle){20.0f, cy, 60.0f, item_slot - 4.0f}, 0.2f, 4, 1.0f,
+        LIGHTGRAY);
+
+    float max_dim = fmaxf((float)it.image.width, (float)it.image.height);
+    if (max_dim > 0.0f) {
+      float scale = (item_slot - 10.0f) / max_dim;
+      float ix = 20.0f + (60.0f - it.image.width * scale) * 0.5f;
+      float iy = cy + ((item_slot - 4.0f) - it.image.height * scale) * 0.5f;
+      DrawTextureEx(it.image, (Vector2){ix, iy}, 0.0f, scale, WHITE);
+    }
   }
 
-  // Elapsed timer HUD
-  const char *string = TextFormat("%.3f", ela_time);
-  const char *string_zeros = TextFormat("%.3f", floorf(ela_time));
-  int string_width_zeros = MeasureText(string_zeros, 30);
-  DrawText(string, GetScreenWidth() - string_width_zeros - 10,
-           GetScreenHeight() - 40, 30, BLACK);
+  // --- RIGHT HUD: OPPONENT SHOPPING LIST ("OPPONENT") ---
+  if (g_net.mode != NET_MODE_SINGLE && has_remote_cart) {
+    float rx = (float)GetScreenWidth() - 88.0f;
+    DrawRectangleRounded((Rectangle){rx, 48.0f, 76.0f, card_h}, 0.08f, 4,
+                         (Color){255, 255, 255, 225});
+    DrawRectangleRoundedLinesEx((Rectangle){rx, 48.0f, 76.0f, card_h}, 0.08f, 4,
+                                2.5f, opp_dark_color);
 
-  // Multiplayer Status Banner
-  if (g_net.mode == NET_MODE_HOST) {
-    if (g_net.state == NET_STATE_CONNECTED) {
-      DrawText(TextFormat("MULTIPLAYER: P1 (Blue, You) | P2 (Red, Connected) | Ping: %.0f ms",
-                          g_net.rtt_ms),
-               20, 10, 18, DARKGREEN);
+    DrawRectangleRounded((Rectangle){rx + 2.0f, 50.0f, 72.0f, 24.0f}, 0.15f,
+                         4, opp_dark_color);
+    const char *opp_tag = (opp_id == 1 ? "OPP (P1)" : "OPP (P2)");
+    DrawText(opp_tag,
+             (int)(rx + 2.0f + (72.0f - MeasureText(opp_tag, 13)) * 0.5f), 55,
+             13, WHITE);
+
+    const char *opp_count_str = TextFormat("%d left", remote_shopping_list.len);
+    DrawText(opp_count_str,
+             (int)(rx + 2.0f + (72.0f - MeasureText(opp_count_str, 12)) * 0.5f),
+             77, 12, opp_dark_color);
+
+    for (int i = 0; i < remote_shopping_list.len; i++) {
+      int item_idx = remote_shopping_list.items[i];
+      if (item_idx < 0 || item_idx >= NUM_ITEMS)
+        continue;
+      Item it = items_table[item_idx];
+      float cy = 96.0f + i * item_slot;
+      DrawRectangleRounded((Rectangle){rx + 8.0f, cy, 60.0f, item_slot - 4.0f},
+                           0.2f, 4, (Color){248, 240, 240, 255});
+      DrawRectangleRoundedLinesEx(
+          (Rectangle){rx + 8.0f, cy, 60.0f, item_slot - 4.0f}, 0.2f, 4, 1.0f,
+          LIGHTGRAY);
+
+      float max_dim = fmaxf((float)it.image.width, (float)it.image.height);
+      if (max_dim > 0.0f) {
+        float scale = (item_slot - 10.0f) / max_dim;
+        float ix = rx + 8.0f + (60.0f - it.image.width * scale) * 0.5f;
+        float iy = cy + ((item_slot - 4.0f) - it.image.height * scale) * 0.5f;
+        DrawTextureEx(it.image, (Vector2){ix, iy}, 0.0f, scale, WHITE);
+      }
+    }
+  }
+
+  // --- TOP CENTER: RACE TIMER & LIVE COMPETITIVE STANDINGS ---
+  if (g_net.mode != NET_MODE_SINGLE && has_remote_cart) {
+    float badge_w = 360.0f;
+    float badge_h = 44.0f;
+    float badge_x = ((float)GetScreenWidth() - badge_w) * 0.5f;
+    DrawRectangleRounded((Rectangle){badge_x, 8.0f, badge_w, badge_h}, 0.25f,
+                         4, (Color){255, 255, 255, 230});
+    DrawRectangleRoundedLinesEx((Rectangle){badge_x, 8.0f, badge_w, badge_h},
+                                0.25f, 4, 2.0f, DARKGRAY);
+
+    const char *time_str = TextFormat("TIME: %.3f s", ela_time);
+    DrawText(time_str,
+             (int)(badge_x + (badge_w - MeasureText(time_str, 18)) * 0.5f), 12,
+             18, BLACK);
+
+    if (winner == 0) {
+      if (local_shopping_list.len < remote_shopping_list.len) {
+        int lead = remote_shopping_list.len - local_shopping_list.len;
+        const char *lead_str = TextFormat("YOU'RE LEADING by %d item%s!", lead,
+                                          lead > 1 ? "s" : "");
+        DrawText(lead_str,
+                 (int)(badge_x + (badge_w - MeasureText(lead_str, 13)) * 0.5f),
+                 32, 13, DARKGREEN);
+      } else if (local_shopping_list.len > remote_shopping_list.len) {
+        int behind = local_shopping_list.len - remote_shopping_list.len;
+        const char *behind_str = TextFormat("OPPONENT LEADING by %d item%s!",
+                                            behind, behind > 1 ? "s" : "");
+        DrawText(behind_str,
+                 (int)(badge_x + (badge_w - MeasureText(behind_str, 13)) * 0.5f),
+                 32, 13, MAROON);
+      } else {
+        const char *tied_str = TextFormat("TIED RACE! (%d items each)",
+                                          local_shopping_list.len);
+        DrawText(tied_str,
+                 (int)(badge_x + (badge_w - MeasureText(tied_str, 13)) * 0.5f),
+                 32, 13, DARKBLUE);
+      }
     } else {
-      DrawText(TextFormat("HOSTING on port %d - Waiting for Player 2...",
-                          g_net.remote_port),
-               20, 10, 18, DARKBLUE);
+      const char *fin_str = (winner == my_id) ? "RACE FINISHED - YOU WON!"
+                                              : "RACE FINISHED - OPPONENT WON!";
+      DrawText(fin_str,
+               (int)(badge_x + (badge_w - MeasureText(fin_str, 13)) * 0.5f), 32,
+               13, (winner == my_id) ? DARKGREEN : MAROON);
     }
-  } else if (g_net.mode == NET_MODE_CLIENT) {
-    if (g_net.state == NET_STATE_CONNECTED) {
-      DrawText(TextFormat("MULTIPLAYER: P2 (Red, You) | P1 (Blue, Host) | Ping: %.0f ms",
-                          g_net.rtt_ms),
-               20, 10, 18, DARKGREEN);
-    }
+
+    // Ping
+    const char *ping_str = TextFormat("Ping: %.0f ms", g_net.rtt_ms);
+    DrawText(ping_str, (int)(badge_x + badge_w + 14.0f), 20, 14, DARKGRAY);
+  } else if (g_net.mode == NET_MODE_HOST && !has_remote_cart) {
+    float badge_w = 460.0f;
+    float badge_x = ((float)GetScreenWidth() - badge_w) * 0.5f;
+    DrawRectangleRounded((Rectangle){badge_x, 8.0f, badge_w, 36.0f}, 0.25f, 4,
+                         (Color){255, 255, 255, 230});
+    DrawRectangleRoundedLinesEx((Rectangle){badge_x, 8.0f, badge_w, 36.0f}, 0.25f,
+                                4, 1.5f, DARKBLUE);
+    const char *wait_str = TextFormat(
+        "HOSTING (port %d) - Waiting for Player 2 to join...", g_net.remote_port);
+    DrawText(wait_str,
+             (int)(badge_x + (badge_w - MeasureText(wait_str, 15)) * 0.5f), 18,
+             15, DARKBLUE);
+  } else {
+    // Singleplayer
+    float badge_w = 200.0f;
+    float badge_x = ((float)GetScreenWidth() - badge_w) * 0.5f;
+    DrawRectangleRounded((Rectangle){badge_x, 8.0f, badge_w, 34.0f}, 0.25f, 4,
+                         (Color){255, 255, 255, 230});
+    DrawRectangleRoundedLinesEx((Rectangle){badge_x, 8.0f, badge_w, 34.0f}, 0.25f,
+                                4, 1.5f, DARKBLUE);
+    const char *time_str = TextFormat("TIME: %.3f s", ela_time);
+    DrawText(time_str,
+             (int)(badge_x + (badge_w - MeasureText(time_str, 18)) * 0.5f), 16,
+             18, DARKBLUE);
   }
 
-  // Shopping list completion message
-  if (shopping_list_len == 0) {
-    const char *done_text = "SHOPPING LIST COMPLETE!";
-    int tw = MeasureText(done_text, 36);
-    DrawText(done_text, GetScreenWidth() / 2 - tw / 2, 60, 36, GOLD);
+  // --- GAME OVER / VICTORY / DEFEAT MODAL ---
+  if (winner != 0) {
+    DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(),
+                  (Color){0, 0, 0, 130});
+    float mw = 480.0f;
+    float mh = 230.0f;
+    float mx = ((float)GetScreenWidth() - mw) * 0.5f;
+    float my = ((float)GetScreenHeight() - mh) * 0.5f;
+
+    DrawRectangleRounded((Rectangle){mx, my, mw, mh}, 0.10f, 4, RAYWHITE);
+
+    if (g_net.mode == NET_MODE_SINGLE) {
+      DrawRectangleRoundedLinesEx((Rectangle){mx, my, mw, mh}, 0.10f, 4, 4.0f,
+                                  GOLD);
+      const char *title = "SHOPPING COMPLETE!";
+      DrawText(title, (int)(mx + (mw - MeasureText(title, 32)) * 0.5f),
+               (int)(my + 28), 32, GOLD);
+      const char *sub = "All groceries successfully collected!";
+      DrawText(sub, (int)(mx + (mw - MeasureText(sub, 17)) * 0.5f),
+               (int)(my + 74), 17, DARKGRAY);
+      const char *t_str = TextFormat("Final Time: %.3f seconds", winning_time);
+      DrawText(t_str, (int)(mx + (mw - MeasureText(t_str, 20)) * 0.5f),
+               (int)(my + 115), 20, BLACK);
+      const char *rem_str = "Press [R] to Play Again";
+      DrawText(rem_str, (int)(mx + (mw - MeasureText(rem_str, 18)) * 0.5f),
+               (int)(my + 165), 18, DARKBLUE);
+    } else {
+      bool won = (winner == my_id);
+      Color border_col = won ? GOLD : MAROON;
+      DrawRectangleRoundedLinesEx((Rectangle){mx, my, mw, mh}, 0.10f, 4, 4.0f,
+                                  border_col);
+
+      const char *title = won ? "VICTORY!" : "DEFEAT!";
+      Color title_col = won ? GOLD : RED;
+      DrawText(title, (int)(mx + (mw - MeasureText(title, 38)) * 0.5f),
+               (int)(my + 24), 38, title_col);
+
+      const char *sub = won ? "You finished your shopping list first!"
+                            : "Opponent finished their shopping list first!";
+      Color sub_col = won ? DARKGREEN : DARKGRAY;
+      DrawText(sub, (int)(mx + (mw - MeasureText(sub, 17)) * 0.5f),
+               (int)(my + 72), 17, sub_col);
+
+      const char *t_str = TextFormat("Winning Time: %.3f seconds", winning_time);
+      DrawText(t_str, (int)(mx + (mw - MeasureText(t_str, 20)) * 0.5f),
+               (int)(my + 112), 20, BLACK);
+
+      const char *rem_str = "";
+      if (g_net.mode == NET_MODE_HOST) {
+        rem_str = "Press [R] to Start Rematch";
+      } else {
+        rem_str = rematch_requested ? "Rematch Requested! Waiting for Host..."
+                                    : "Press [R] to Request Rematch";
+      }
+      DrawText(rem_str, (int)(mx + (mw - MeasureText(rem_str, 18)) * 0.5f),
+               (int)(my + 162), 18, DARKBLUE);
+    }
   }
 
   EndDrawing();
@@ -676,12 +955,7 @@ int main(int argc, char **argv) {
     DrawTickFrame();
   }
 
-  if (world_initialized) {
-    island_shelfarr_free(&shelves);
-    island_posterarr_free(&posters);
-    itemarr_free_all(&items);
-    wallarr_free_all(&walls);
-  }
+  cleanup_game_world();
   cart_free(&main_cart);
   if (mode != NET_MODE_SINGLE) {
     cart_free(&remote_cart);
