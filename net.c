@@ -181,7 +181,8 @@ void net_send_hello(void) {
   net_send(&p, sizeof(p));
 }
 
-void net_send_init(uint32_t seed, const int *slist, int slist_len) {
+void net_send_init(uint32_t seed, const int *slist, int slist_len,
+                   const uint8_t *grid_mask) {
   PktInit p;
   memset(&p, 0, sizeof(p));
   p.header.type = PKT_INIT;
@@ -189,6 +190,9 @@ void net_send_init(uint32_t seed, const int *slist, int slist_len) {
   p.shopping_list_count = (uint8_t)slist_len;
   for (int i = 0; i < slist_len && i < SHOPPING_LIST_MAX_LEN; i++) {
     p.shopping_list[i] = (int16_t)slist[i];
+  }
+  if (grid_mask) {
+    memcpy(p.grid_mask, grid_mask, sizeof(p.grid_mask));
   }
   net_send(&p, sizeof(p));
 }
@@ -201,7 +205,7 @@ void net_send_ready(void) {
 }
 
 void net_send_cart_state(Vector2 pos, Vector2 vel, float rot, float ang_vel,
-                         int pick_side, int pick_item_idx, float mass) {
+                         int pick_side, Vector2 pick_pos, float mass) {
   PktCartState p = {
       .header = {.type = PKT_CART_STATE},
       .seq = ++g_net.send_seq,
@@ -212,7 +216,8 @@ void net_send_cart_state(Vector2 pos, Vector2 vel, float rot, float ang_vel,
       .rot = rot,
       .ang_vel = ang_vel,
       .pick_side = (int8_t)pick_side,
-      .pick_item_idx = (int16_t)pick_item_idx,
+      .pick_pos_x = pick_pos.x,
+      .pick_pos_y = pick_pos.y,
       .mass = mass,
   };
   net_send(&p, sizeof(p));
@@ -233,6 +238,25 @@ void net_send_ping(void) {
   PktPingPong p = {
       .header = {.type = PKT_PING},
       .timestamp_ms = (uint32_t)(GetTime() * 1000.0),
+  };
+  net_send(&p, sizeof(p));
+}
+
+void net_send_bump(Vector2 impulse, float ang_impulse) {
+  PktBump p = {
+      .header = {.type = PKT_BUMP},
+      .impulse_x = impulse.x,
+      .impulse_y = impulse.y,
+      .ang_impulse = ang_impulse,
+  };
+  net_send(&p, sizeof(p));
+}
+
+void net_send_game_over(uint8_t winner_id, float final_time) {
+  PktGameOver p = {
+      .header = {.type = PKT_GAME_OVER},
+      .winner_id = winner_id,
+      .final_time = final_time,
   };
   net_send(&p, sizeof(p));
 }

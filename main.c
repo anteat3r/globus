@@ -17,7 +17,7 @@ static Cart main_cart;
 static Cart remote_cart;
 static bool has_remote_cart = false;
 static int remote_pick_side = -1;
-static int remote_pick_item_idx = -1;
+static Vector2 remote_pick_pos = {0};
 static Vector2 remote_target_pos;
 static Vector2 remote_target_vel;
 static float remote_target_rot = 0.0f;
@@ -35,8 +35,15 @@ static IslandShelfArr shelves;
 static int pick_side = -1;
 static int pick_item_idx = -1;
 static float ela_time = 0.0f;
+static float race_start_time = 0.0f;
 static bool world_initialized = false;
 static uint32_t net_seed = 0;
+static uint8_t host_grid_mask[MALL_GRID_MASK_SIZE] = {0};
+
+static ShoppingList local_shopping_list = {0};
+static ShoppingList remote_shopping_list = {0};
+static int winner = 0; // 0 = Ongoing race, 1 = Player 1 (Blue), 2 = Player 2 (Red)
+static float winning_time = 0.0f;
 
 static float LerpAngle(float a, float b, float t) {
   float diff = fmodf(b - a + PI, 2.0f * PI) - PI;
@@ -45,10 +52,11 @@ static float LerpAngle(float a, float b, float t) {
   return a + diff * t;
 }
 
-static void init_game_world(uint32_t seed) {
+static void init_game_world(uint32_t seed, const uint8_t *in_grid_mask) {
   if (world_initialized)
     return;
   net_seed = seed;
+  mall_seed_prng(seed);
   srand(seed);
 
   fill_items_table();
@@ -57,13 +65,28 @@ static void init_game_world(uint32_t seed) {
   walls = wallarr_new();
   posters = island_posterarr_new();
   shelves = island_shelfarr_new();
-  mall_generation("res/wfc.png", &walls, &items, &posters, &shelves);
+  mall_generation("res/wfc.png", &walls, &items, &posters, &shelves, seed,
+                  in_grid_mask, host_grid_mask);
 
   printf("%d items loaded, %d shelves, %d posters generated (seed: %u)\n",
          items.len, shelves.len, posters.len, seed);
   fflush(stdout);
 
-  fill_shopping_list();
+  if (in_grid_mask == NULL) {
+    fill_shopping_list();
+    local_shopping_list.len = shopping_list_len;
+    local_shopping_list.initial_len = shopping_list_len;
+    for (int i = 0; i < shopping_list_len; i++) {
+      local_shopping_list.items[i] = shopping_list[i];
+      remote_shopping_list.items[i] = shopping_list[i];
+    }
+    remote_shopping_list.len = shopping_list_len;
+    remote_shopping_list.initial_len = shopping_list_len;
+  }
+  winner = 0;
+  winning_time = 0.0f;
+  race_start_time = 0.0f;
+  ela_time = 0.0f;
   world_initialized = true;
 }
 
@@ -71,7 +94,17 @@ static void apply_remote_shopping_list(const PktInit *init) {
   shopping_list_len = init->shopping_list_count;
   for (int i = 0; i < shopping_list_len && i < SHOPPING_LIST_MAX_LEN; i++) {
     shopping_list[i] = init->shopping_list[i];
+    local_shopping_list.items[i] = init->shopping_list[i];
+    remote_shopping_list.items[i] = init->shopping_list[i];
   }
+  local_shopping_list.len = shopping_list_len;
+  local_shopping_list.initial_len = shopping_list_len;
+  remote_shopping_list.len = shopping_list_len;
+  remote_shopping_list.initial_len = shopping_list_len;
+  winner = 0;
+  winning_time = 0.0f;
+  race_start_time = 0.0f;
+  ela_time = 0.0f;
 }
 
 static void DrawTickFrame(void) {
@@ -101,15 +134,35 @@ static void DrawTickFrame(void) {
       switch (pkt.header.type) {
       case PKT_HELLO:
         if (g_net.mode == NET_MODE_HOST) {
-          net_send_init(net_seed, shopping_list, shopping_list_len);
+          net_send_init(net_seed, shopping_list, shopping_list_len,
+                        host_grid_mask);
           g_net.state = NET_STATE_CONNECTING;
         }
         break;
 
       case PKT_INIT:
         if (g_net.mode == NET_MODE_CLIENT) {
-          init_game_world(pkt.init.seed);
+          if (world_initialized) {
+            island_shelfarr_free(&shelves);
+            island_posterarr_free(&posters);
+            itemarr_free_all(&items);
+            wallarr_free_all(&walls);
+            itemarr_free_all(&main_cart.items);
+            itemarr_free_all(&remote_cart.items);
+            world_initialized = false;
+          }
+          init_game_world(pkt.init.seed, pkt.init.grid_mask);
           apply_remote_shopping_list(&pkt.init);
+          main_cart.pos = (Vector2){10.5f, 10.0f};
+          main_cart.vel = Vector2Zero();
+          main_cart.rot = 0.0f;
+          main_cart.ang_vel = 0.0f;
+          remote_cart.pos = (Vector2){9.5f, 10.0f};
+          remote_cart.vel = Vector2Zero();
+          remote_cart.rot = 0.0f;
+          remote_cart.ang_vel = 0.0f;
+          remote_target_pos = remote_cart.pos;
+          remote_target_vel = Vector2Zero();
           has_remote_cart = true;
           net_send_ready();
           g_net.state = NET_STATE_CONNECTED;
@@ -130,16 +183,23 @@ static void DrawTickFrame(void) {
           remote_target_rot = pkt.cart.rot;
           remote_target_ang_vel = pkt.cart.ang_vel;
           remote_pick_side = pkt.cart.pick_side;
-          remote_pick_item_idx = pkt.cart.pick_item_idx;
+          remote_pick_pos =
+              (Vector2){pkt.cart.pick_pos_x, pkt.cart.pick_pos_y};
           remote_cart.mass = pkt.cart.mass;
         }
+        break;
+
+      case PKT_BUMP:
+        main_cart.vel = Vector2Add(
+            main_cart.vel, (Vector2){pkt.bump.impulse_x, pkt.bump.impulse_y});
+        main_cart.ang_vel += pkt.bump.ang_impulse;
         break;
 
       case PKT_ITEM_PICK:
         if (world_initialized) {
           Vector2 target_pos = (Vector2){pkt.pick.pos_x, pkt.pick.pos_y};
           int found_idx = -1;
-          float best_dist = 0.45f;
+          float best_dist = 0.70f;
           for (int i = 0; i < items.len; i++) {
             float d = Vector2Distance(items.items[i].pos, target_pos);
             if (d < best_dist) {
@@ -148,8 +208,21 @@ static void DrawTickFrame(void) {
             }
           }
           if (found_idx != -1) {
-            cart_consume_item(&remote_cart, &items, found_idx);
+            Item picked = cart_consume_item(&remote_cart, &items, found_idx);
+            shopping_list_consume(&remote_shopping_list, picked);
+
+            if (remote_shopping_list.len == 0 && winner == 0) {
+              winner = (g_net.mode == NET_MODE_CLIENT ? 1 : 2);
+              winning_time = ela_time;
+            }
           }
+        }
+        break;
+
+      case PKT_GAME_OVER:
+        if (winner == 0) {
+          winner = pkt.game_over.winner_id;
+          winning_time = pkt.game_over.final_time;
         }
         break;
 
@@ -313,14 +386,15 @@ static void DrawTickFrame(void) {
     remote_cart.ang_vel = remote_target_ang_vel;
 
     // Cart-on-cart bumping physics
-    cart_collide_cart(&main_cart, &remote_cart);
-  }
-
-  // Stream local cart state to network
-  if (g_net.state == NET_STATE_CONNECTED && world_initialized) {
-    net_send_cart_state(main_cart.pos, main_cart.vel, main_cart.rot,
-                        main_cart.ang_vel, pick_side, pick_item_idx,
-                        main_cart.mass);
+    Vector2 bump_impulse = Vector2Zero();
+    float bump_ang = 0.0f;
+    if (cart_collide_cart(&main_cart, &remote_cart, &bump_impulse, &bump_ang)) {
+      if (g_net.state == NET_STATE_CONNECTED) {
+        net_send_bump(bump_impulse, bump_ang);
+      }
+      remote_target_vel = remote_cart.vel;
+      remote_target_pos = remote_cart.pos;
+    }
   }
 
   // Item pickup highlight logic
@@ -337,8 +411,9 @@ static void DrawTickFrame(void) {
   for (int i = 0; i < items.len; i++) {
     Item item = items.items[i];
     float ddist = Vector2Distance(item.pos, driver);
-    if (ddist < item.collision_radius + main_cart.driver_radius &&
-        ddist < min_dist) {
+    float reach_radius =
+        fmaxf(item.collision_radius, 0.40f) + main_cart.driver_radius + 0.15f;
+    if (ddist < reach_radius && ddist < min_dist) {
       min_dist = ddist;
       pick_item_idx = i;
       if (Vector2Distance(item.pos, lhaldle) <
@@ -349,10 +424,12 @@ static void DrawTickFrame(void) {
     }
   }
 
-  // Local item pickup action
-  if ((IsKeyPressed(KEY_ENTER) ||
-       IsGamepadButtonPressed(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN)) &&
-      pick_side != -1 && pick_item_idx >= 0 && pick_item_idx < items.len) {
+  // Local item pickup action (supports Enter, Space, E, and Gamepad A)
+  bool pick_pressed = IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE) ||
+                      IsKeyPressed(KEY_E) ||
+                      IsGamepadButtonPressed(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN);
+  if (pick_pressed && pick_side != -1 && pick_item_idx >= 0 &&
+      pick_item_idx < items.len) {
     Item picked = items.items[pick_item_idx];
     cart_consume_item(&main_cart, &items, pick_item_idx);
 
@@ -362,6 +439,17 @@ static void DrawTickFrame(void) {
     }
     pick_item_idx = -1;
     pick_side = -1;
+  }
+
+  // Stream local cart state to network
+  if (g_net.state == NET_STATE_CONNECTED && world_initialized) {
+    Vector2 pick_target =
+        (pick_side != -1 && pick_item_idx >= 0 && pick_item_idx < items.len)
+            ? items.items[pick_item_idx].pos
+            : Vector2Zero();
+    net_send_cart_state(main_cart.pos, main_cart.vel, main_cart.rot,
+                        main_cart.ang_vel, pick_side, pick_target,
+                        main_cart.mass);
   }
 
   float wheel = GetMouseWheelMove();
@@ -417,10 +505,9 @@ static void DrawTickFrame(void) {
 
   // Draw remote cart
   if (has_remote_cart) {
-    Item *rem_item = (remote_pick_item_idx >= 0 && remote_pick_item_idx < items.len)
-                         ? &items.items[remote_pick_item_idx]
-                         : NULL;
-    cart_draw(&remote_cart, remote_pick_side, rem_item, topleft, botright);
+    Item rem_item = {.pos = remote_pick_pos};
+    Item *p_rem_item = (remote_pick_side != -1) ? &rem_item : NULL;
+    cart_draw(&remote_cart, remote_pick_side, p_rem_item, topleft, botright);
   }
 
   // Draw local cart
@@ -432,10 +519,9 @@ static void DrawTickFrame(void) {
 
   // Draw hands
   if (has_remote_cart) {
-    Item *rem_item = (remote_pick_item_idx >= 0 && remote_pick_item_idx < items.len)
-                         ? &items.items[remote_pick_item_idx]
-                         : NULL;
-    cart_draw_hands(&remote_cart, remote_pick_side, rem_item);
+    Item rem_item = {.pos = remote_pick_pos};
+    Item *p_rem_item = (remote_pick_side != -1) ? &rem_item : NULL;
+    cart_draw_hands(&remote_cart, remote_pick_side, p_rem_item);
   }
   cart_draw_hands(&main_cart, pick_side,
                   pick_item_idx >= 0 ? &items.items[pick_item_idx] : NULL);
@@ -550,7 +636,7 @@ int main(int argc, char **argv) {
     remote_cart.pos = (Vector2){10.5f, 10.0f};
     remote_target_pos = remote_cart.pos;
 
-    init_game_world((uint32_t)time(NULL));
+    init_game_world((uint32_t)time(NULL), NULL);
   } else if (mode == NET_MODE_CLIENT) {
     net_init_client(join_ip, port);
 
@@ -568,9 +654,6 @@ int main(int argc, char **argv) {
                        (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
     remote_cart.pos = (Vector2){9.5f, 10.0f};
     remote_target_pos = remote_cart.pos;
-
-    // Load base textures now so world init later is instantaneous
-    fill_items_table();
   } else {
     // Singleplayer (Blue)
     main_cart =
@@ -579,7 +662,7 @@ int main(int argc, char **argv) {
                        (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
     main_cart.pos = (Vector2){10.0f, 10.0f};
 
-    init_game_world((uint32_t)time(NULL));
+    init_game_world((uint32_t)time(NULL), NULL);
   }
 
   cam = (Camera2D){

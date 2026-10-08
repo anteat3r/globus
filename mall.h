@@ -5,8 +5,8 @@
 #include "wall.h"
 #include <raylib.h>
 
-#define MALL_WIDTH 32
-#define MALL_HEIGHT 32
+#define MALL_WIDTH 64
+#define MALL_HEIGHT 64
 
 #define NUM_COLORS 4
 extern Color mall_colors[NUM_COLORS];
@@ -62,7 +62,14 @@ void island_shelfarr_push_line(IslandShelfArr *shelves, Vector2 start,
 void island_shelfarr_draw(IslandShelfArr shelves, Vector2 topleft,
                           Vector2 botright);
 
+#define MALL_GRID_MASK_SIZE (MALL_WIDTH * MALL_HEIGHT / 8)
+
+void mall_pack_grid(const int grid[MALL_HEIGHT][MALL_WIDTH], uint8_t *mask);
+void mall_unpack_grid(const uint8_t *mask, int grid[MALL_HEIGHT][MALL_WIDTH]);
+
 void mall_generation(const char *filename, WallArr *walls, ItemArr *items,
-                     IslandPosterArr *posters, IslandShelfArr *shelves);
+                     IslandPosterArr *posters, IslandShelfArr *shelves,
+                     unsigned int seed, const uint8_t *in_grid_mask,
+                     uint8_t *out_grid_mask);
 
 #endif // MALL_H

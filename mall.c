@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 Color mall_colors[NUM_COLORS] = {
     MAROON,
@@ -35,56 +36,101 @@ static inline Color isle_dim_color(Color c) {
   };
 }
 
-void mall_generation(const char *filename, WallArr *walls, ItemArr *items,
-                     IslandPosterArr *posters, IslandShelfArr *shelves) {
-  Image wfc_image = LoadImage(filename);
-
-  Color *wfc_image_colors = malloc(wfc_image.width * wfc_image.height * 4);
-  if (!wfc_image_colors)
-    perror_exit("wfc_image_colors malloc");
-
-  for (int y = 0; y < wfc_image.height; y++) {
-    for (int x = 0; x < wfc_image.width; x++) {
-      int idx = y * wfc_image.width + x;
-      wfc_image_colors[idx] = GetImageColor(wfc_image, x, y);
-    }
-  }
-
-  struct wfc_image image = {
-      .data = (unsigned char *)wfc_image_colors,
-      .width = wfc_image.width,
-      .height = wfc_image.height,
-      .component_cnt = 4,
-  };
-  struct wfc *wfc =
-      wfc_overlapping(MALL_WIDTH, MALL_HEIGHT, &image, 3, 3, 1, 1, 1, 1);
-  if (!wfc)
-    perror_exit("wfc_overlapping");
-
-  while (!wfc_run(wfc, -1)) {
-    wfc_init(wfc);
-  }
-
-  struct wfc_image *res_plan = wfc_output_image(wfc);
-
-  int grid[MALL_HEIGHT][MALL_WIDTH];
+void mall_pack_grid(const int grid[MALL_HEIGHT][MALL_WIDTH], uint8_t *mask) {
+  memset(mask, 0, MALL_GRID_MASK_SIZE);
   for (int y = 0; y < MALL_HEIGHT; y++) {
     for (int x = 0; x < MALL_WIDTH; x++) {
-      int idx = y * MALL_WIDTH + x;
-      grid[y][x] = (res_plan->data[idx * 4] != 0) ? 1 : 0;
-    }
-  }
-
-  // Ensure a 3x3 open aisle area around the player starting position (10, 10)
-  for (int dy = -1; dy <= 1; dy++) {
-    for (int dx = -1; dx <= 1; dx++) {
-      int sx = 10 + dx;
-      int sy = 10 + dy;
-      if (sx >= 0 && sx < MALL_WIDTH && sy >= 0 && sy < MALL_HEIGHT) {
-        grid[sy][sx] = 0;
+      if (grid[y][x]) {
+        int bit = y * MALL_WIDTH + x;
+        mask[bit / 8] |= (uint8_t)(1 << (bit % 8));
       }
     }
   }
+}
+
+void mall_unpack_grid(const uint8_t *mask, int grid[MALL_HEIGHT][MALL_WIDTH]) {
+  for (int y = 0; y < MALL_HEIGHT; y++) {
+    for (int x = 0; x < MALL_WIDTH; x++) {
+      int bit = y * MALL_WIDTH + x;
+      grid[y][x] = (mask[bit / 8] & (1 << (bit % 8))) ? 1 : 0;
+    }
+  }
+}
+
+void mall_generation(const char *filename, WallArr *walls, ItemArr *items,
+                     IslandPosterArr *posters, IslandShelfArr *shelves,
+                     unsigned int seed, const uint8_t *in_grid_mask,
+                     uint8_t *out_grid_mask) {
+  mall_seed_prng(seed);
+
+  int grid[MALL_HEIGHT][MALL_WIDTH];
+
+  if (in_grid_mask != NULL) {
+    // Client path: unpack the authoritative grid sent by host!
+    mall_unpack_grid(in_grid_mask, grid);
+  } else {
+    // Host / Singleplayer path: run WFC
+    Image wfc_image = LoadImage(filename);
+
+    Color *wfc_image_colors = malloc(wfc_image.width * wfc_image.height * 4);
+    if (!wfc_image_colors)
+      perror_exit("wfc_image_colors malloc");
+
+    for (int y = 0; y < wfc_image.height; y++) {
+      for (int x = 0; x < wfc_image.width; x++) {
+        int idx = y * wfc_image.width + x;
+        wfc_image_colors[idx] = GetImageColor(wfc_image, x, y);
+      }
+    }
+
+    struct wfc_image image = {
+        .data = (unsigned char *)wfc_image_colors,
+        .width = wfc_image.width,
+        .height = wfc_image.height,
+        .component_cnt = 4,
+    };
+    struct wfc *wfc =
+        wfc_overlapping(MALL_WIDTH, MALL_HEIGHT, &image, 3, 3, 1, 1, 1, 1);
+    if (!wfc)
+      perror_exit("wfc_overlapping");
+
+    wfc_init_seed(wfc, seed);
+    while (!wfc_run(wfc, -1)) {
+      wfc_init(wfc);
+    }
+
+    struct wfc_image *res_plan = wfc_output_image(wfc);
+
+    for (int y = 0; y < MALL_HEIGHT; y++) {
+      for (int x = 0; x < MALL_WIDTH; x++) {
+        int idx = y * MALL_WIDTH + x;
+        grid[y][x] = (res_plan->data[idx * 4] != 0) ? 1 : 0;
+      }
+    }
+
+    // Ensure a 3x3 open aisle area around the player starting position (10, 10)
+    for (int dy = -1; dy <= 1; dy++) {
+      for (int dx = -1; dx <= 1; dx++) {
+        int sx = 10 + dx;
+        int sy = 10 + dy;
+        if (sx >= 0 && sx < MALL_WIDTH && sy >= 0 && sy < MALL_HEIGHT) {
+          grid[sy][sx] = 0;
+        }
+      }
+    }
+
+    if (out_grid_mask != NULL) {
+      mall_pack_grid(grid, out_grid_mask);
+    }
+
+    free(wfc_image_colors);
+    UnloadImage(wfc_image);
+    wfc_destroy(wfc);
+    wfc_img_destroy(res_plan);
+  }
+
+  // Deterministically re-seed before building shelves and items
+  mall_seed_prng(seed);
 
   // Find all shelf islands using BFS
   bool visited[MALL_HEIGHT][MALL_WIDTH] = {0};
@@ -278,16 +324,15 @@ void mall_generation(const char *filename, WallArr *walls, ItemArr *items,
                 (Vector2){(float)(tx + 1), (float)ty}, shelf_rail);
           }
         }
-        int count_edge = 3 + (rand() % 3);
+        int count_edge = 3 + (mall_rand_u32() % 3);
         for (int k = 0; k < count_edge; k++) {
           float tk = ((float)k + 0.5f) / (float)count_edge;
-          float jitter =
-              ((float)rand() / (float)RAND_MAX - 0.5f) * 0.05f;
+          float jitter = (mall_rand_float() - 0.5f) * 0.05f;
           item.pos = (Vector2){
               (float)tx + 0.12f + 0.76f * tk + jitter,
               (float)ty + (shelf_depth * 0.5f),
           };
-          item.rot = ((float)rand() / (float)RAND_MAX) * 2.0f * PI;
+          item.rot = mall_rand_float() * 2.0f * PI;
           itemarr_push(items, item);
         }
       }
@@ -325,16 +370,15 @@ void mall_generation(const char *filename, WallArr *walls, ItemArr *items,
                 (Vector2){(float)(tx + 1), (float)(ty + 1)}, shelf_rail);
           }
         }
-        int count_edge = 3 + (rand() % 3);
+        int count_edge = 3 + (mall_rand_u32() % 3);
         for (int k = 0; k < count_edge; k++) {
           float tk = ((float)k + 0.5f) / (float)count_edge;
-          float jitter =
-              ((float)rand() / (float)RAND_MAX - 0.5f) * 0.05f;
+          float jitter = (mall_rand_float() - 0.5f) * 0.05f;
           item.pos = (Vector2){
               (float)tx + 0.12f + 0.76f * tk + jitter,
               (float)(ty + 1) - (shelf_depth * 0.5f),
           };
-          item.rot = ((float)rand() / (float)RAND_MAX) * 2.0f * PI;
+          item.rot = mall_rand_float() * 2.0f * PI;
           itemarr_push(items, item);
         }
       }
@@ -368,16 +412,15 @@ void mall_generation(const char *filename, WallArr *walls, ItemArr *items,
                 (Vector2){(float)tx, (float)(ty + 1)}, shelf_rail);
           }
         }
-        int count_edge = 3 + (rand() % 3);
+        int count_edge = 3 + (mall_rand_u32() % 3);
         for (int k = 0; k < count_edge; k++) {
           float tk = ((float)k + 0.5f) / (float)count_edge;
-          float jitter =
-              ((float)rand() / (float)RAND_MAX - 0.5f) * 0.05f;
+          float jitter = (mall_rand_float() - 0.5f) * 0.05f;
           item.pos = (Vector2){
               (float)tx + (shelf_depth * 0.5f),
               (float)ty + 0.12f + 0.76f * tk + jitter,
           };
-          item.rot = ((float)rand() / (float)RAND_MAX) * 2.0f * PI;
+          item.rot = mall_rand_float() * 2.0f * PI;
           itemarr_push(items, item);
         }
       }
@@ -416,16 +459,15 @@ void mall_generation(const char *filename, WallArr *walls, ItemArr *items,
                 (Vector2){(float)(tx + 1), (float)(ty + 1)}, shelf_rail);
           }
         }
-        int count_edge = 3 + (rand() % 3);
+        int count_edge = 3 + (mall_rand_u32() % 3);
         for (int k = 0; k < count_edge; k++) {
           float tk = ((float)k + 0.5f) / (float)count_edge;
-          float jitter =
-              ((float)rand() / (float)RAND_MAX - 0.5f) * 0.05f;
+          float jitter = (mall_rand_float() - 0.5f) * 0.05f;
           item.pos = (Vector2){
               (float)(tx + 1) - (shelf_depth * 0.5f),
               (float)ty + 0.12f + 0.76f * tk + jitter,
           };
-          item.rot = ((float)rand() / (float)RAND_MAX) * 2.0f * PI;
+          item.rot = mall_rand_float() * 2.0f * PI;
           itemarr_push(items, item);
         }
       }
@@ -444,10 +486,6 @@ void mall_generation(const char *filename, WallArr *walls, ItemArr *items,
 
   free(islands);
   free(tile_pool);
-  free(wfc_image_colors);
-  UnloadImage(wfc_image);
-  wfc_destroy(wfc);
-  wfc_img_destroy(res_plan);
 }
 
 IslandPosterArr island_posterarr_new(void) {

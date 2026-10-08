@@ -65,8 +65,9 @@ void cart_apply_impulse(Cart *cart, Vector2 rel_pos, Vector2 impulse);
 void cart_apply_impulse_rotated(Cart *cart, Vector2 rel_pos, Vector2 impulse);
 
 void cart_tick(Cart *cart, WallArr walls, int num_walls, float delta);
-void cart_collide_cart(Cart *c1, Cart *c2);
-void cart_consume_item(Cart *cart, ItemArr *items, int index);
+bool cart_collide_cart(Cart *c1, Cart *c2, Vector2 *out_bump_impulse,
+                       float *out_bump_ang);
+Item cart_consume_item(Cart *cart, ItemArr *items, int index);
 void cart_draw(Cart *cart, int pick, Item *pick_item, Vector2 topleft,
                Vector2 botright);
 void cart_draw_hands(Cart *cart, int pick, Item *pick_item);

@@ -1,5 +1,6 @@
 #include "item.h"
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 Item items_table[NUM_ITEMS];
@@ -916,6 +917,21 @@ static int fill_items_table_milk(int idx) {
   return idx;
 }
 
+static uint32_t s_mall_rng = 123456789U;
+
+void mall_seed_prng(uint32_t seed) {
+  s_mall_rng = seed ? seed : 123456789U;
+}
+
+uint32_t mall_rand_u32(void) {
+  s_mall_rng = s_mall_rng * 1664525U + 1013904223U;
+  return s_mall_rng;
+}
+
+float mall_rand_float(void) {
+  return (float)(mall_rand_u32() & 0x00FFFFFF) / (float)0x01000000;
+}
+
 void fill_items_table(void) {
   static bool s_loaded = false;
   static Item s_base_items[NUM_ITEMS];
@@ -941,7 +957,7 @@ void fill_items_table(void) {
   }
 
   for (int i = 0; i < NUM_ITEMS - 1; i++) {
-    size_t j = i + rand() / (RAND_MAX / (NUM_ITEMS - i) + 1);
+    size_t j = i + (mall_rand_u32() % (NUM_ITEMS - i));
     Item t = items_table[j];
     items_table[j] = items_table[i];
     items_table[i] = t;
@@ -959,7 +975,9 @@ void fill_shopping_list(void) {
 
   for (int i = 0; i < target_len; i++) {
   loopstart:;
-    int num = GetRandomValue(0, used_items_len - 1);
+    int num = used_items_len > 0
+                  ? (int)(mall_rand_u32() % (uint32_t)used_items_len)
+                  : 0;
     int item_idx = used_items[num];
     for (int j = 0; j < i; j++)
       if (shopping_list[j] == item_idx)
@@ -968,10 +986,13 @@ void fill_shopping_list(void) {
   }
 }
 
-bool shopping_list_consume(Item item) {
+bool shopping_list_consume(ShoppingList *slist, Item item) {
+  if (!slist)
+    return false;
+
   int slist_idx = -1;
-  for (int i = 0; i < shopping_list_len; i++) {
-    if (items_table[shopping_list[i]].image.id == item.image.id) {
+  for (int i = 0; i < slist->len; i++) {
+    if (items_table[slist->items[i]].image.id == item.image.id) {
       slist_idx = i;
       break;
     }
@@ -979,9 +1000,9 @@ bool shopping_list_consume(Item item) {
   if (slist_idx == -1)
     return false;
 
-  shopping_list_len--;
-  for (int i = slist_idx; i < shopping_list_len; i++)
-    shopping_list[i] = shopping_list[i + 1];
+  slist->len--;
+  for (int i = slist_idx; i < slist->len; i++)
+    slist->items[i] = slist->items[i + 1];
 
   return true;
 }

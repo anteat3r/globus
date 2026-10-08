@@ -143,6 +143,7 @@ struct wfc *wfc_overlapping(int output_width,              // Output width in pi
                             int rotate_tiles);             // Add n*90deg rotations of all tiles
 
 void wfc_init(struct wfc *wfc); // Resets wfc generation, wfc_run can be called again
+void wfc_init_seed(struct wfc *wfc, unsigned int seed);
 int wfc_run(struct wfc *wfc, int max_collapse_cnt);
 int wfc_export(struct wfc *wfc, const char *filename);
 void wfc_destroy(struct wfc *wfc);
@@ -1112,7 +1113,19 @@ static void wfc__init_cells(struct wfc *wfc)
 // Allows to call wfc_run again
 void wfc_init(struct wfc *wfc)
 {
-  wfc->seed = (unsigned int) time(NULL); // 1641743677
+  if (wfc->seed != 0) {
+    wfc->seed = wfc->seed * 1103515245U + 12345U;
+  } else {
+    wfc->seed = (unsigned int) time(NULL);
+  }
+  srand(wfc->seed);
+  wfc->collapsed_cell_cnt = 0;
+  wfc__init_cells(wfc);
+}
+
+void wfc_init_seed(struct wfc *wfc, unsigned int seed)
+{
+  wfc->seed = seed ? seed : 1U;
   srand(wfc->seed);
   wfc->collapsed_cell_cnt = 0;
   wfc__init_cells(wfc);
@@ -1261,6 +1274,7 @@ struct wfc *wfc_overlapping(int output_width,
   struct wfc *wfc = malloc(sizeof(*wfc));
   if (wfc == NULL)
     goto CLEANUP;
+  memset(wfc, 0, sizeof(*wfc));
 
   wfc->method = WFC_METHOD_OVERLAPPING;
   wfc->image = image;

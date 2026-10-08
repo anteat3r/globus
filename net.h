@@ -29,6 +29,8 @@ typedef enum {
   PKT_ITEM_PICK = 5,
   PKT_PING = 6,
   PKT_PONG = 7,
+  PKT_BUMP = 8,
+  PKT_GAME_OVER = 9,
 } PacketType;
 
 #pragma pack(push, 1)
@@ -47,6 +49,7 @@ typedef struct {
   uint32_t seed;
   uint8_t shopping_list_count;
   int16_t shopping_list[SHOPPING_LIST_MAX_LEN];
+  uint8_t grid_mask[128];
 } PktInit;
 
 typedef struct {
@@ -63,7 +66,8 @@ typedef struct {
   float rot;
   float ang_vel;
   int8_t pick_side;
-  int16_t pick_item_idx;
+  float pick_pos_x;
+  float pick_pos_y;
   float mass;
 } PktCartState;
 
@@ -80,6 +84,19 @@ typedef struct {
   uint32_t timestamp_ms;
 } PktPingPong;
 
+typedef struct {
+  PktHeader header;
+  float impulse_x;
+  float impulse_y;
+  float ang_impulse;
+} PktBump;
+
+typedef struct {
+  PktHeader header;
+  uint8_t winner_id;
+  float final_time;
+} PktGameOver;
+
 #pragma pack(pop)
 
 typedef union {
@@ -90,6 +107,8 @@ typedef union {
   PktCartState cart;
   PktItemPick pick;
   PktPingPong ping;
+  PktBump bump;
+  PktGameOver game_over;
   uint8_t raw[512];
 } NetPacket;
 
@@ -119,11 +138,14 @@ bool net_send(const void *data, size_t size);
 int net_poll(NetPacket *pkt);
 
 void net_send_hello(void);
-void net_send_init(uint32_t seed, const int *slist, int slist_len);
+void net_send_init(uint32_t seed, const int *slist, int slist_len,
+                   const uint8_t *grid_mask);
 void net_send_ready(void);
 void net_send_cart_state(Vector2 pos, Vector2 vel, float rot, float ang_vel,
-                         int pick_side, int pick_item_idx, float mass);
+                         int pick_side, Vector2 pick_pos, float mass);
 void net_send_item_pick(int texture_id, Vector2 pos, int player_id);
 void net_send_ping(void);
+void net_send_bump(Vector2 impulse, float ang_impulse);
+void net_send_game_over(uint8_t winner_id, float final_time);
 
 #endif // NET_H

@@ -318,12 +318,18 @@ void cart_tick(Cart *cart, WallArr walls, int num_walls, float delta) {
   }
 }
 
-void cart_collide_cart(Cart *c1, Cart *c2) {
+bool cart_collide_cart(Cart *c1, Cart *c2, Vector2 *out_bump_impulse,
+                       float *out_bump_ang) {
+  if (out_bump_impulse)
+    *out_bump_impulse = Vector2Zero();
+  if (out_bump_ang)
+    *out_bump_ang = 0.0f;
+
   Vector2 delta = Vector2Subtract(c1->pos, c2->pos);
   float dist = Vector2Length(delta);
   float min_dist = c1->max_vrt_dist + c2->max_vrt_dist;
   if (dist >= min_dist || dist < 0.001f)
-    return;
+    return false;
 
   Vector2 n = Vector2Scale(delta, 1.0f / dist);
   float penetration = min_dist - dist;
@@ -340,22 +346,34 @@ void cart_collide_cart(Cart *c1, Cart *c2) {
   Vector2 v_rel = Vector2Subtract(c1->vel, c2->vel);
   float vn = Vector2DotProduct(v_rel, n);
   if (vn >= 0.0f)
-    return;
+    return false;
 
-  float restitution = 0.5f;
-  float jn = -(1.0f + restitution) * vn / total_inv_m;
+  // Punchy arcade bumper response: energetic restitution and bonus charging kick
+  float restitution = 1.15f;
+  float impact_speed = -vn;
+  float boost = (impact_speed > 0.35f) ? 1.5f : 1.0f;
+  float jn = -(1.0f + restitution) * vn / total_inv_m * boost;
+
   Vector2 impulse = Vector2Scale(n, jn);
 
   c1->vel = Vector2Add(c1->vel, Vector2Scale(impulse, inv_m1));
   c2->vel = Vector2Subtract(c2->vel, Vector2Scale(impulse, inv_m2));
 
-  float i1 = c1->mom_inertia > 0.1f ? c1->mom_inertia : 1.0f;
-  float i2 = c2->mom_inertia > 0.1f ? c2->mom_inertia : 1.0f;
-  c1->ang_vel += (n.y * 0.3f) / i1;
-  c2->ang_vel -= (n.y * 0.3f) / i2;
+  float i1 = c1->mom_inertia > 0.1f ? c1->mom_inertia : 0.6f;
+  float i2 = c2->mom_inertia > 0.1f ? c2->mom_inertia : 0.6f;
+  float torque = ((n.x * v_rel.y - n.y * v_rel.x) * 1.5f) + (n.y * 1.0f);
+  c1->ang_vel += torque / i1;
+  c2->ang_vel -= torque / i2;
+
+  if (out_bump_impulse && out_bump_ang) {
+    *out_bump_impulse = Vector2Scale(impulse, -inv_m2);
+    *out_bump_ang = -torque / i2;
+  }
+
+  return (impact_speed > 0.35f);
 }
 
-void cart_consume_item(Cart *cart, ItemArr *items, int index) {
+Item cart_consume_item(Cart *cart, ItemArr *items, int index) {
   Item item = items->items[index];
 
   ColliPoly padd_collider = {
@@ -375,12 +393,12 @@ void cart_consume_item(Cart *cart, ItemArr *items, int index) {
   collipoly_free(&padd_collider);
 
   item.pos = item_pos;
-  item.rot = (float)rand() / (float)(RAND_MAX / PI / 2);
+  item.rot = mall_rand_float() * 2.0f * PI;
   itemarr_push(&cart->items, item);
   itemarr_remove(items, index);
 
   cart_recalculate_mass_inertia(cart);
-  shopping_list_consume(item);
+  return item;
 }
 
 void cart_draw(Cart *cart, int pick, Item *pick_item, Vector2 topleft,
@@ -421,18 +439,24 @@ void cart_draw_hands(Cart *cart, int pick, Item *pick_item) {
   if (cart->standard) {
     DrawCircleV(lhaldle, 0.07, cart->color);
     DrawCircleV(rhaldle, 0.07, cart->color);
-    if (pick != 0) {
+    bool drew_pick_arm = false;
+    if (pick != -1 && pick_item != NULL) {
+      Vector2 pick_shoulder = (pick == 1) ? rshoulder : lshoulder;
+      if (Vector2Distance(pick_shoulder, pick_item->pos) <= 0.65f) {
+        DrawLineEx(pick_shoulder, pick_item->pos, ARM_WIDTH,
+                   cart->driver_color);
+        DrawCircleV(pick_item->pos, 0.04, cart->driver_color);
+        drew_pick_arm = true;
+      }
+    }
+
+    if (!drew_pick_arm || pick != 0) {
       DrawLineEx(lshoulder, lhaldle, ARM_WIDTH, cart->driver_color);
       DrawCircleV(lhaldle, 0.04, cart->driver_color);
     }
-    if (pick != 1) {
+    if (!drew_pick_arm || pick != 1) {
       DrawLineEx(rshoulder, rhaldle, ARM_WIDTH, cart->driver_color);
       DrawCircleV(rhaldle, 0.04, cart->driver_color);
-    }
-    if (pick != -1) {
-      DrawLineEx(pick == 1 ? rshoulder : lshoulder, pick_item->pos, ARM_WIDTH,
-                 cart->driver_color);
-      DrawCircleV(pick_item->pos, 0.04, cart->driver_color);
     }
   }
   DrawCircleV(driver, cart->driver_radius, cart->driver_color);
