@@ -101,6 +101,15 @@ float collipoly_area(ColliPoly polygon) {
 }
 
 Vector2 collipoly_center(ColliPoly polygon, float area) {
+  if (polygon.len == 0)
+    return (Vector2){0.0f, 0.0f};
+  if (fabsf(area) < 0.0001f) {
+    Vector2 avg = {0.0f, 0.0f};
+    for (int i = 0; i < polygon.len; i++) {
+      avg = Vector2Add(avg, polygon.items[i]);
+    }
+    return Vector2Scale(avg, 1.0f / (float)polygon.len);
+  }
   Vector2 res = {0.0f, 0.0f};
   for (int i = 0; i < polygon.len; i++) {
     Vector2 v = polygon.items[i];
@@ -109,8 +118,8 @@ Vector2 collipoly_center(ColliPoly polygon, float area) {
     res.x += (v.x + w.x) * idk;
     res.y += (v.y + w.y) * idk;
   }
-  res.x /= 6 * area;
-  res.y /= 6 * area;
+  res.x /= 6.0f * area;
+  res.y /= 6.0f * area;
   return res;
 }
 
@@ -132,7 +141,7 @@ bool collipoly_contains(ColliPoly polygon, Vector2 pnt) {
     Vector2 v = polygon.items[i];
     Vector2 w = polygon.items[j];
     if (((v.y > pnt.y) != (w.y > pnt.y)) &&
-        (pnt.x < (w.x - v.x) * (pnt.y - v.y) / (w.y - v.y) + v.y))
+        (pnt.x < (w.x - v.x) * (pnt.y - v.y) / (w.y - v.y) + v.x))
       c = !c;
   }
   return c;
@@ -150,13 +159,15 @@ Vector2 collipoly_random_pnt(ColliPoly polygon) {
   }
 
   Vector2 res = {0.0f, 0.0f};
-  while (true) {
-    res.x = (float)rand() / (float)(RAND_MAX / max_dist / 2) - max_dist;
-    res.y = (float)rand() / (float)(RAND_MAX / max_dist / 2) - max_dist;
+  int attempts = 0;
+  while (attempts++ < 100) {
+    float rx = (float)rand() / (float)RAND_MAX * (max_dist * 2.0f) - max_dist;
+    float ry = (float)rand() / (float)RAND_MAX * (max_dist * 2.0f) - max_dist;
+    res = (Vector2){center.x + rx, center.y + ry};
     if (collipoly_contains(polygon, res))
-      break;
+      return res;
   }
-  return res;
+  return center;
 }
 
 CollisionInfo get_polygon_collision_info(ColliPoly polyA, ColliPoly polyB) {
@@ -187,7 +198,13 @@ CollisionInfo get_polygon_collision_info(ColliPoly polyA, ColliPoly polyB) {
     float overlap = fminf(maxA, maxB) - fmaxf(minA, minB);
     if (overlap < info.depth) {
       info.depth = overlap;
-      info.normal = axis;
+      float midA = (minA + maxA) * 0.5f;
+      float midB = (minB + maxB) * 0.5f;
+      if (midA < midB) {
+        info.normal = Vector2Negate(axis);
+      } else {
+        info.normal = axis;
+      }
     }
   }
 
@@ -210,21 +227,17 @@ CollisionInfo get_polygon_collision_info(ColliPoly polyA, ColliPoly polyB) {
     float overlap = fminf(maxA, maxB) - fmaxf(minA, minB);
     if (overlap < info.depth) {
       info.depth = overlap;
-      info.normal = axis;
+      float midA = (minA + maxA) * 0.5f;
+      float midB = (minB + maxB) * 0.5f;
+      if (midA < midB) {
+        info.normal = Vector2Negate(axis);
+      } else {
+        info.normal = axis;
+      }
     }
   }
 
   info.collided = true;
-
-  // Ensure normal points from polyB to polyA
-  Vector2 centerA = collipoly_center(polyA, collipoly_area(polyA));
-  Vector2 centerB = collipoly_center(polyB, collipoly_area(polyB));
-  Vector2 dir_B_to_A = Vector2Subtract(centerA, centerB);
-
-  if (Vector2DotProduct(dir_B_to_A, info.normal) < 0.0f) {
-    info.normal = Vector2Negate(info.normal);
-  }
-
   info.mtv = Vector2Scale(info.normal, info.depth);
   return info;
 }

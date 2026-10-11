@@ -2,6 +2,7 @@
 #define NET_H
 
 #include "item.h"
+#include "mall.h"
 #include <raylib.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -31,6 +32,7 @@ typedef enum {
   PKT_PONG = 7,
   PKT_BUMP = 8,
   PKT_GAME_OVER = 9,
+  PKT_COLLISION_EVENT = 10,
 } PacketType;
 
 #pragma pack(push, 1)
@@ -44,7 +46,7 @@ typedef struct {
   char player_name[16];
 } PktHello;
 
-#define NET_GRID_MASK_SIZE 512
+#define NET_GRID_MASK_SIZE MALL_GRID_MASK_SIZE
 
 typedef struct {
   PktHeader header;
@@ -99,6 +101,21 @@ typedef struct {
   float final_time;
 } PktGameOver;
 
+typedef struct {
+  PktHeader header;
+  float impulse_x;
+  float impulse_y;
+  float ang_impulse;
+  uint8_t faster_player_id;
+  int32_t transferred_texture_id;
+  int32_t p1_dropped_texture_id;
+  float p1_drop_x;
+  float p1_drop_y;
+  int32_t p2_dropped_texture_id;
+  float p2_drop_x;
+  float p2_drop_y;
+} PktCollisionEvent;
+
 #pragma pack(pop)
 
 typedef union {
@@ -111,6 +128,7 @@ typedef union {
   PktPingPong ping;
   PktBump bump;
   PktGameOver game_over;
+  PktCollisionEvent collision;
   uint8_t raw[1024];
 } NetPacket;
 
@@ -149,5 +167,6 @@ void net_send_item_pick(int texture_id, Vector2 pos, int player_id);
 void net_send_ping(void);
 void net_send_bump(Vector2 impulse, float ang_impulse);
 void net_send_game_over(uint8_t winner_id, float final_time);
+void net_send_collision_event(const PktCollisionEvent *event);
 
 #endif // NET_H

@@ -68,6 +68,9 @@ void cart_tick(Cart *cart, WallArr walls, int num_walls, float delta);
 bool cart_collide_cart(Cart *c1, Cart *c2, Vector2 *out_bump_impulse,
                        float *out_bump_ang);
 Item cart_consume_item(Cart *cart, ItemArr *items, int index);
+void cart_add_item(Cart *cart, Item item);
+bool cart_remove_item(Cart *cart, int index, Item *out_item);
+bool cart_remove_item_by_texture_id(Cart *cart, unsigned int texture_id, Item *out_item);
 void cart_draw(Cart *cart, int pick, Item *pick_item, Vector2 topleft,
                Vector2 botright);
 void cart_draw_hands(Cart *cart, int pick, Item *pick_item);

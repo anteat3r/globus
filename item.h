@@ -62,10 +62,13 @@ typedef struct {
   int items[SHOPPING_LIST_MAX_LEN];
   int len;
   int initial_len;
+  int initial_items[SHOPPING_LIST_MAX_LEN];
 } ShoppingList;
 
 void fill_items_table(void);
 void fill_shopping_list(void);
 bool shopping_list_consume(ShoppingList *slist, Item item);
+bool shopping_list_readd(ShoppingList *slist, Item item);
+int item_table_find_by_texture_id(unsigned int texture_id);
 
 #endif // ITEM_H

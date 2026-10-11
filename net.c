@@ -260,3 +260,7 @@ void net_send_game_over(uint8_t winner_id, float final_time) {
   };
   net_send(&p, sizeof(p));
 }
+
+void net_send_collision_event(const PktCollisionEvent *event) {
+  net_send(event, sizeof(PktCollisionEvent));
+}

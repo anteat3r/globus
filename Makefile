@@ -18,7 +18,7 @@ wall.o: wall.c wall.h geometry.h
 item.o: item.c item.h geometry.h
 cart.o: cart.c cart.h geometry.h item.h wall.h
 mall.o: mall.c mall.h geometry.h item.h wall.h wfc.h
-net.o: net.c net.h item.h
+net.o: net.c net.h item.h mall.h
 main.o: main.c geometry.h wall.h item.h cart.h mall.h net.h
 wfc.o: wfc.c wfc.h
 

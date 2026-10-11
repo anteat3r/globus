@@ -43,22 +43,18 @@ void item_draw(Item item, Vector2 offset, float rot) {
 
 ColliPoly item_get_world_collider(Item item) {
   Vector2 half_size = {
-      (float)item.image.width / 2 * item.scale,
-      (float)item.image.height / 2 * item.scale,
+      (float)item.image.width / 2.0f * item.scale,
+      (float)item.image.height / 2.0f * item.scale,
   };
-  return collipoly_new(4,
-                       Vector2Rotate((Vector2){item.pos.x - half_size.x,
-                                               item.pos.y - half_size.y},
-                                     item.rot),
-                       Vector2Rotate((Vector2){item.pos.x - half_size.x,
-                                               item.pos.y + half_size.y},
-                                     item.rot),
-                       Vector2Rotate((Vector2){item.pos.x + half_size.x,
-                                               item.pos.y + half_size.y},
-                                     item.rot),
-                       Vector2Rotate((Vector2){item.pos.x + half_size.x,
-                                               item.pos.y - half_size.y},
-                                     item.rot));
+  Vector2 c1 = Vector2Add(
+      item.pos, Vector2Rotate((Vector2){-half_size.x, -half_size.y}, item.rot));
+  Vector2 c2 = Vector2Add(
+      item.pos, Vector2Rotate((Vector2){-half_size.x, half_size.y}, item.rot));
+  Vector2 c3 = Vector2Add(
+      item.pos, Vector2Rotate((Vector2){half_size.x, half_size.y}, item.rot));
+  Vector2 c4 = Vector2Add(
+      item.pos, Vector2Rotate((Vector2){half_size.x, -half_size.y}, item.rot));
+  return collipoly_new(4, c1, c2, c3, c4);
 }
 
 ItemArr itemarr_new(void) {
@@ -1006,3 +1002,39 @@ bool shopping_list_consume(ShoppingList *slist, Item item) {
 
   return true;
 }
+
+bool shopping_list_readd(ShoppingList *slist, Item item) {
+  if (!slist)
+    return false;
+
+  int initial_table_idx = -1;
+  for (int i = 0; i < slist->initial_len; i++) {
+    if (items_table[slist->initial_items[i]].image.id == item.image.id) {
+      initial_table_idx = slist->initial_items[i];
+      break;
+    }
+  }
+  if (initial_table_idx == -1)
+    return false;
+
+  for (int i = 0; i < slist->len; i++) {
+    if (slist->items[i] == initial_table_idx)
+      return false;
+  }
+
+  if (slist->len >= SHOPPING_LIST_MAX_LEN)
+    return false;
+
+  slist->items[slist->len] = initial_table_idx;
+  slist->len++;
+  return true;
+}
+
+int item_table_find_by_texture_id(unsigned int texture_id) {
+  for (int i = 0; i < NUM_ITEMS; i++) {
+    if (items_table[i].image.id == texture_id)
+      return i;
+  }
+  return -1;
+}
+

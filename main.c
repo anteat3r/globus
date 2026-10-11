@@ -48,12 +48,143 @@ static float winning_time = 0.0f;
 static bool rematch_requested = false;
 static const char *screenshot_path = NULL;
 static int screenshot_countdown = -1;
+static float last_collision_time = 0.0f;
+static char crash_toast_text[96] = {0};
+static float crash_toast_time = 0.0f;
+
+#define MAX_DROPPED_FLOOR_ITEMS 64
+typedef struct {
+  Vector2 pos;
+  int texture_id;
+  int owner_player_id; // 1 = Blue/Host, 2 = Red/Client
+  float drop_time;
+  bool active;
+} DroppedFloorItem;
+static DroppedFloorItem dropped_floor_items[MAX_DROPPED_FLOOR_ITEMS] = {0};
+
+#define MAX_FLYING_DROPS 16
+typedef struct {
+  Item item;
+  Vector2 start_pos;
+  Vector2 end_pos;
+  float start_time;
+  float duration;
+  int owner_player_id;
+  bool active;
+} FlyingDropAnim;
+static FlyingDropAnim flying_drops[MAX_FLYING_DROPS] = {0};
+
+#define MAX_SHOCKWAVES 32
+typedef struct {
+  Vector2 pos;
+  float start_time;
+  float duration;
+  float max_radius;
+  Color color;
+  bool active;
+} ShockwaveFx;
+static ShockwaveFx shockwaves[MAX_SHOCKWAVES] = {0};
+
+#define MAX_FLOATING_TEXTS 16
+typedef struct {
+  Vector2 pos;
+  char text[32];
+  Color color;
+  float start_time;
+  float duration;
+  bool active;
+} FloatingTextFx;
+static FloatingTextFx floating_texts[MAX_FLOATING_TEXTS] = {0};
+
+static void add_dropped_floor_item(Vector2 pos, int texture_id, int owner_id) {
+  for (int i = 0; i < MAX_DROPPED_FLOOR_ITEMS; i++) {
+    if (!dropped_floor_items[i].active) {
+      dropped_floor_items[i] = (DroppedFloorItem){
+          .pos = pos,
+          .texture_id = texture_id,
+          .owner_player_id = owner_id,
+          .drop_time = (float)GetTime(),
+          .active = true,
+      };
+      return;
+    }
+  }
+}
+
+static void remove_dropped_floor_item(Vector2 pos, int texture_id) {
+  for (int i = 0; i < MAX_DROPPED_FLOOR_ITEMS; i++) {
+    if (dropped_floor_items[i].active &&
+        dropped_floor_items[i].texture_id == texture_id &&
+        Vector2Distance(dropped_floor_items[i].pos, pos) < 0.65f) {
+      dropped_floor_items[i].active = false;
+      return;
+    }
+  }
+}
+
+static void spawn_flying_drop(Item item, Vector2 start_pos, Vector2 end_pos,
+                              int owner_id) {
+  for (int i = 0; i < MAX_FLYING_DROPS; i++) {
+    if (!flying_drops[i].active) {
+      flying_drops[i] = (FlyingDropAnim){
+          .item = item,
+          .start_pos = start_pos,
+          .end_pos = end_pos,
+          .start_time = (float)GetTime(),
+          .duration = 0.55f,
+          .owner_player_id = owner_id,
+          .active = true,
+      };
+      return;
+    }
+  }
+}
+
+static void spawn_shockwave(Vector2 pos, float max_radius, Color color) {
+  for (int i = 0; i < MAX_SHOCKWAVES; i++) {
+    if (!shockwaves[i].active) {
+      shockwaves[i] = (ShockwaveFx){
+          .pos = pos,
+          .start_time = (float)GetTime(),
+          .duration = 0.50f,
+          .max_radius = max_radius,
+          .color = color,
+          .active = true,
+      };
+      return;
+    }
+  }
+}
+
+static void spawn_floating_text(Vector2 pos, const char *text, Color color) {
+  for (int i = 0; i < MAX_FLOATING_TEXTS; i++) {
+    if (!floating_texts[i].active) {
+      floating_texts[i] = (FloatingTextFx){
+          .pos = pos,
+          .color = color,
+          .start_time = (float)GetTime(),
+          .duration = 1.25f,
+          .active = true,
+      };
+      strncpy(floating_texts[i].text, text, sizeof(floating_texts[i].text) - 1);
+      floating_texts[i].text[sizeof(floating_texts[i].text) - 1] = '\0';
+      return;
+    }
+  }
+}
 
 static float LerpAngle(float a, float b, float t) {
   float diff = fmodf(b - a + PI, 2.0f * PI) - PI;
   if (diff < -PI)
     diff += 2.0f * PI;
   return a + diff * t;
+}
+
+static void sync_local_shopping_list(void) {
+  shopping_list_len = local_shopping_list.len;
+  for (int i = 0; i < local_shopping_list.len; i++) {
+    shopping_list[i] = local_shopping_list.items[i];
+  }
 }
 
 static void init_game_world(uint32_t seed, const uint8_t *in_grid_mask) {
@@ -82,7 +213,9 @@ static void init_game_world(uint32_t seed, const uint8_t *in_grid_mask) {
     local_shopping_list.initial_len = shopping_list_len;
     for (int i = 0; i < shopping_list_len; i++) {
       local_shopping_list.items[i] = shopping_list[i];
+      local_shopping_list.initial_items[i] = shopping_list[i];
       remote_shopping_list.items[i] = shopping_list[i];
+      remote_shopping_list.initial_items[i] = shopping_list[i];
     }
     remote_shopping_list.len = shopping_list_len;
     remote_shopping_list.initial_len = shopping_list_len;
@@ -92,6 +225,13 @@ static void init_game_world(uint32_t seed, const uint8_t *in_grid_mask) {
   race_start_time = 0.0f;
   ela_time = 0.0f;
   rematch_requested = false;
+  last_collision_time = 0.0f;
+  crash_toast_time = 0.0f;
+  crash_toast_text[0] = '\0';
+  memset(dropped_floor_items, 0, sizeof(dropped_floor_items));
+  memset(flying_drops, 0, sizeof(flying_drops));
+  memset(shockwaves, 0, sizeof(shockwaves));
+  memset(floating_texts, 0, sizeof(floating_texts));
   world_initialized = true;
 }
 
@@ -100,7 +240,9 @@ static void apply_remote_shopping_list(const PktInit *init) {
   for (int i = 0; i < shopping_list_len && i < SHOPPING_LIST_MAX_LEN; i++) {
     shopping_list[i] = init->shopping_list[i];
     local_shopping_list.items[i] = init->shopping_list[i];
+    local_shopping_list.initial_items[i] = init->shopping_list[i];
     remote_shopping_list.items[i] = init->shopping_list[i];
+    remote_shopping_list.initial_items[i] = init->shopping_list[i];
   }
   local_shopping_list.len = shopping_list_len;
   local_shopping_list.initial_len = shopping_list_len;
@@ -111,6 +253,9 @@ static void apply_remote_shopping_list(const PktInit *init) {
   race_start_time = 0.0f;
   ela_time = 0.0f;
   rematch_requested = false;
+  last_collision_time = 0.0f;
+  crash_toast_time = 0.0f;
+  crash_toast_text[0] = '\0';
 }
 
 static void cleanup_game_world(void) {
@@ -164,6 +309,281 @@ static void restart_match(void) {
     rematch_requested = true;
     net_send_hello();
   }
+}
+
+static void handle_host_cart_collision(float p1_speed, float p2_speed,
+                                       Vector2 bump_impulse, float bump_ang) {
+  float now = (float)GetTime();
+  if (now - last_collision_time < 0.5f || winner != 0) {
+    return;
+  }
+  last_collision_time = now;
+
+  // Determine faster player: 1 = Host (Blue), 2 = Client (Red), 0 = Equal
+  int faster_id = 0;
+  if (p1_speed > p2_speed + 0.02f) {
+    faster_id = 1;
+  } else if (p2_speed > p1_speed + 0.02f) {
+    faster_id = 2;
+  } else if (p1_speed > p2_speed) {
+    faster_id = 1;
+  } else if (p2_speed > p1_speed) {
+    faster_id = 2;
+  }
+
+  int transferred_texture_id = -1;
+
+  if (faster_id != 0) {
+    Cart *faster_cart = (faster_id == 1) ? &main_cart : &remote_cart;
+    ShoppingList *faster_slist =
+        (faster_id == 1) ? &local_shopping_list : &remote_shopping_list;
+    Cart *slower_cart = (faster_id == 1) ? &remote_cart : &main_cart;
+    ShoppingList *slower_slist =
+        (faster_id == 1) ? &remote_shopping_list : &local_shopping_list;
+
+    int best_cand_idx = -1;
+    for (int i = 0; i < slower_cart->items.len; i++) {
+      Item it = slower_cart->items.items[i];
+      bool in_slower_initial = false;
+      for (int k = 0; k < slower_slist->initial_len; k++) {
+        if (items_table[slower_slist->initial_items[k]].image.id ==
+            it.image.id) {
+          in_slower_initial = true;
+          break;
+        }
+      }
+      if (in_slower_initial) {
+        bool faster_needs = false;
+        for (int k = 0; k < faster_slist->len; k++) {
+          if (items_table[faster_slist->items[k]].image.id == it.image.id) {
+            faster_needs = true;
+            break;
+          }
+        }
+        if (faster_needs) {
+          best_cand_idx = i;
+          break;
+        } else if (best_cand_idx == -1) {
+          best_cand_idx = i;
+        }
+      }
+    }
+
+    if (best_cand_idx != -1) {
+      Item stolen_item;
+      if (cart_remove_item(slower_cart, best_cand_idx, &stolen_item)) {
+        transferred_texture_id = (int)stolen_item.image.id;
+        shopping_list_readd(slower_slist, stolen_item);
+        cart_add_item(faster_cart, stolen_item);
+        shopping_list_consume(faster_slist, stolen_item);
+
+        spawn_floating_text(slower_cart->pos, "STOLEN!", ORANGE);
+        spawn_floating_text(faster_cart->pos, "+1 STOLEN!", GOLD);
+        spawn_shockwave(faster_cart->pos, 0.7f, GOLD);
+
+        if (faster_slist->len == 0 && winner == 0) {
+          winner = faster_id;
+          winning_time = ela_time;
+          if (g_net.mode != NET_MODE_SINGLE) {
+            net_send_game_over((uint8_t)winner, winning_time);
+          }
+        }
+      }
+    }
+  }
+
+  // Crash impact shockwave
+  Vector2 crash_pos =
+      Vector2Scale(Vector2Add(main_cart.pos, remote_cart.pos), 0.5f);
+  spawn_shockwave(crash_pos, 1.3f, ORANGE);
+
+  // Both players drop one item on the floor
+  int p1_drop_tex_id = -1;
+  Vector2 p1_drop_pos = Vector2Zero();
+  if (main_cart.items.len > 0) {
+    int drop_idx = main_cart.items.len - 1;
+    Item p1_dropped;
+    if (cart_remove_item(&main_cart, drop_idx, &p1_dropped)) {
+      shopping_list_readd(&local_shopping_list, p1_dropped);
+      float ang = mall_rand_float() * 2.0f * PI;
+      float r = 0.5f + mall_rand_float() * 0.35f;
+      p1_dropped.pos =
+          Vector2Add(main_cart.pos, (Vector2){cosf(ang) * r, sinf(ang) * r});
+      p1_dropped.rot = mall_rand_float() * 2.0f * PI;
+      p1_drop_tex_id = (int)p1_dropped.image.id;
+      p1_drop_pos = p1_dropped.pos;
+      itemarr_push(&items, p1_dropped);
+
+      spawn_flying_drop(p1_dropped, main_cart.pos, p1_drop_pos, 1);
+      add_dropped_floor_item(p1_drop_pos, p1_drop_tex_id, 1);
+      spawn_floating_text(main_cart.pos, "-1 DROPPED", (Color){255, 80, 80, 255});
+    }
+  }
+
+  int p2_drop_tex_id = -1;
+  Vector2 p2_drop_pos = Vector2Zero();
+  if (remote_cart.items.len > 0) {
+    int drop_idx = remote_cart.items.len - 1;
+    Item p2_dropped;
+    if (cart_remove_item(&remote_cart, drop_idx, &p2_dropped)) {
+      shopping_list_readd(&remote_shopping_list, p2_dropped);
+      float ang = mall_rand_float() * 2.0f * PI;
+      float r = 0.5f + mall_rand_float() * 0.35f;
+      p2_dropped.pos =
+          Vector2Add(remote_cart.pos, (Vector2){cosf(ang) * r, sinf(ang) * r});
+      p2_dropped.rot = mall_rand_float() * 2.0f * PI;
+      p2_drop_tex_id = (int)p2_dropped.image.id;
+      p2_drop_pos = p2_dropped.pos;
+      itemarr_push(&items, p2_dropped);
+
+      spawn_flying_drop(p2_dropped, remote_cart.pos, p2_drop_pos, 2);
+      add_dropped_floor_item(p2_drop_pos, p2_drop_tex_id, 2);
+      spawn_floating_text(remote_cart.pos, "-1 DROPPED", (Color){255, 80, 80, 255});
+    }
+  }
+
+  sync_local_shopping_list();
+
+  if (g_net.mode == NET_MODE_HOST && g_net.state == NET_STATE_CONNECTED) {
+    PktCollisionEvent pkt = {
+        .header = {.type = PKT_COLLISION_EVENT},
+        .impulse_x = bump_impulse.x,
+        .impulse_y = bump_impulse.y,
+        .ang_impulse = bump_ang,
+        .faster_player_id = (uint8_t)faster_id,
+        .transferred_texture_id = transferred_texture_id,
+        .p1_dropped_texture_id = p1_drop_tex_id,
+        .p1_drop_x = p1_drop_pos.x,
+        .p1_drop_y = p1_drop_pos.y,
+        .p2_dropped_texture_id = p2_drop_tex_id,
+        .p2_drop_x = p2_drop_pos.x,
+        .p2_drop_y = p2_drop_pos.y,
+    };
+    net_send_collision_event(&pkt);
+  }
+
+  if (transferred_texture_id != -1) {
+    if (faster_id == 1) {
+      snprintf(crash_toast_text, sizeof(crash_toast_text),
+               "CRASH! You stole an item from Opponent!");
+    } else {
+      snprintf(crash_toast_text, sizeof(crash_toast_text),
+               "CRASH! Opponent stole an item from you!");
+    }
+  } else {
+    snprintf(crash_toast_text, sizeof(crash_toast_text),
+             "CRASH! Groceries dropped on the floor!");
+  }
+  crash_toast_time = now;
+}
+
+static void handle_client_collision_event(const PktCollisionEvent *ev) {
+  float now = (float)GetTime();
+  last_collision_time = now;
+
+  Vector2 crash_pos =
+      Vector2Scale(Vector2Add(main_cart.pos, remote_cart.pos), 0.5f);
+  spawn_shockwave(crash_pos, 1.3f, ORANGE);
+
+  main_cart.vel = Vector2Add(
+      main_cart.vel, (Vector2){ev->impulse_x, ev->impulse_y});
+  main_cart.ang_vel += ev->ang_impulse;
+
+  if (ev->transferred_texture_id != -1) {
+    Cart *faster_cart =
+        (ev->faster_player_id == 2) ? &main_cart : &remote_cart;
+    ShoppingList *faster_slist =
+        (ev->faster_player_id == 2) ? &local_shopping_list : &remote_shopping_list;
+    Cart *slower_cart =
+        (ev->faster_player_id == 2) ? &remote_cart : &main_cart;
+    ShoppingList *slower_slist =
+        (ev->faster_player_id == 2) ? &remote_shopping_list : &local_shopping_list;
+
+    Item stolen_item;
+    bool found = cart_remove_item_by_texture_id(
+        slower_cart, (unsigned int)ev->transferred_texture_id, &stolen_item);
+    if (!found) {
+      int tbl_idx = item_table_find_by_texture_id(
+          (unsigned int)ev->transferred_texture_id);
+      if (tbl_idx != -1) {
+        stolen_item = items_table[tbl_idx];
+      }
+    }
+    shopping_list_readd(slower_slist, stolen_item);
+    cart_add_item(faster_cart, stolen_item);
+    shopping_list_consume(faster_slist, stolen_item);
+
+    spawn_floating_text(slower_cart->pos, "STOLEN!", ORANGE);
+    spawn_floating_text(faster_cart->pos, "+1 STOLEN!", GOLD);
+    spawn_shockwave(faster_cart->pos, 0.7f, GOLD);
+
+    if (faster_slist->len == 0 && winner == 0) {
+      winner = ev->faster_player_id;
+      winning_time = ela_time;
+    }
+  }
+
+  // Player 1 drop (remote cart on client)
+  if (ev->p1_dropped_texture_id != -1) {
+    Item p1_dropped;
+    bool found = cart_remove_item_by_texture_id(
+        &remote_cart, (unsigned int)ev->p1_dropped_texture_id, &p1_dropped);
+    if (!found) {
+      int tbl_idx = item_table_find_by_texture_id(
+          (unsigned int)ev->p1_dropped_texture_id);
+      if (tbl_idx != -1)
+        p1_dropped = items_table[tbl_idx];
+      else if (remote_cart.items.len > 0)
+        cart_remove_item(&remote_cart, remote_cart.items.len - 1, &p1_dropped);
+    }
+    shopping_list_readd(&remote_shopping_list, p1_dropped);
+    p1_dropped.pos = (Vector2){ev->p1_drop_x, ev->p1_drop_y};
+    p1_dropped.rot = mall_rand_float() * 2.0f * PI;
+    itemarr_push(&items, p1_dropped);
+
+    spawn_flying_drop(p1_dropped, remote_cart.pos, p1_dropped.pos, 1);
+    add_dropped_floor_item(p1_dropped.pos, (int)p1_dropped.image.id, 1);
+    spawn_floating_text(remote_cart.pos, "-1 DROPPED", (Color){255, 80, 80, 255});
+  }
+
+  // Player 2 drop (main cart on client)
+  if (ev->p2_dropped_texture_id != -1) {
+    Item p2_dropped;
+    bool found = cart_remove_item_by_texture_id(
+        &main_cart, (unsigned int)ev->p2_dropped_texture_id, &p2_dropped);
+    if (!found) {
+      int tbl_idx = item_table_find_by_texture_id(
+          (unsigned int)ev->p2_dropped_texture_id);
+      if (tbl_idx != -1)
+        p2_dropped = items_table[tbl_idx];
+      else if (main_cart.items.len > 0)
+        cart_remove_item(&main_cart, main_cart.items.len - 1, &p2_dropped);
+    }
+    shopping_list_readd(&local_shopping_list, p2_dropped);
+    p2_dropped.pos = (Vector2){ev->p2_drop_x, ev->p2_drop_y};
+    p2_dropped.rot = mall_rand_float() * 2.0f * PI;
+    itemarr_push(&items, p2_dropped);
+
+    spawn_flying_drop(p2_dropped, main_cart.pos, p2_dropped.pos, 2);
+    add_dropped_floor_item(p2_dropped.pos, (int)p2_dropped.image.id, 2);
+    spawn_floating_text(main_cart.pos, "-1 DROPPED", (Color){255, 80, 80, 255});
+  }
+
+  sync_local_shopping_list();
+
+  if (ev->transferred_texture_id != -1) {
+    if (ev->faster_player_id == 2) {
+      snprintf(crash_toast_text, sizeof(crash_toast_text),
+               "CRASH! You stole an item from Opponent!");
+    } else {
+      snprintf(crash_toast_text, sizeof(crash_toast_text),
+               "CRASH! Opponent stole an item from you!");
+    }
+  } else {
+    snprintf(crash_toast_text, sizeof(crash_toast_text),
+             "CRASH! Groceries dropped on the floor!");
+  }
+  crash_toast_time = now;
 }
 
 static void DrawTickFrame(void) {
@@ -250,6 +670,17 @@ static void DrawTickFrame(void) {
         main_cart.vel = Vector2Add(
             main_cart.vel, (Vector2){pkt.bump.impulse_x, pkt.bump.impulse_y});
         main_cart.ang_vel += pkt.bump.ang_impulse;
+        if (g_net.mode == NET_MODE_HOST && winner == 0) {
+          float p1_spd = Vector2Length(main_cart.vel);
+          float p2_spd = Vector2Length(remote_cart.vel);
+          handle_host_cart_collision(p1_spd, p2_spd, Vector2Zero(), 0.0f);
+        }
+        break;
+
+      case PKT_COLLISION_EVENT:
+        if (g_net.mode == NET_MODE_CLIENT && world_initialized) {
+          handle_client_collision_event(&pkt.collision);
+        }
         break;
 
       case PKT_ITEM_PICK:
@@ -267,6 +698,9 @@ static void DrawTickFrame(void) {
           if (found_idx != -1) {
             Item picked = cart_consume_item(&remote_cart, &items, found_idx);
             shopping_list_consume(&remote_shopping_list, picked);
+            remove_dropped_floor_item(picked.pos, (int)picked.image.id);
+            spawn_shockwave(picked.pos, 0.45f,
+                            (g_net.mode == NET_MODE_CLIENT ? BLUE : MAROON));
           } else {
             Item dummy = {.image = (Texture2D){.id = pkt.pick.texture_id}};
             shopping_list_consume(&remote_shopping_list, dummy);
@@ -428,11 +862,17 @@ static void DrawTickFrame(void) {
     remote_cart.ang_vel = remote_target_ang_vel;
 
     // Cart-on-cart bumping physics
+    float p1_speed = (g_net.mode == NET_MODE_CLIENT)
+                         ? Vector2Length(remote_cart.vel)
+                         : Vector2Length(main_cart.vel);
+    float p2_speed = (g_net.mode == NET_MODE_CLIENT)
+                         ? Vector2Length(main_cart.vel)
+                         : Vector2Length(remote_cart.vel);
     Vector2 bump_impulse = Vector2Zero();
     float bump_ang = 0.0f;
     if (cart_collide_cart(&main_cart, &remote_cart, &bump_impulse, &bump_ang)) {
-      if (g_net.state == NET_STATE_CONNECTED) {
-        net_send_bump(bump_impulse, bump_ang);
+      if (g_net.mode == NET_MODE_HOST) {
+        handle_host_cart_collision(p1_speed, p2_speed, bump_impulse, bump_ang);
       }
       remote_target_vel = remote_cart.vel;
       remote_target_pos = remote_cart.pos;
@@ -452,7 +892,9 @@ static void DrawTickFrame(void) {
 
   for (int i = 0; i < items.len; i++) {
     Item item = items.items[i];
-    float ddist = Vector2Distance(item.pos, driver);
+    float ddist_driver = Vector2Distance(item.pos, driver);
+    float ddist_cart = Vector2Distance(item.pos, main_cart.pos);
+    float ddist = fminf(ddist_driver, ddist_cart);
     float reach_radius =
         fmaxf(item.collision_radius, 0.40f) + main_cart.driver_radius + 0.15f;
     if (ddist < reach_radius && ddist < min_dist) {
@@ -474,13 +916,13 @@ static void DrawTickFrame(void) {
       pick_item_idx < items.len) {
     Item picked = items.items[pick_item_idx];
     cart_consume_item(&main_cart, &items, pick_item_idx);
+    remove_dropped_floor_item(picked.pos, (int)picked.image.id);
+    spawn_shockwave(picked.pos, 0.45f, GREEN);
+    spawn_floating_text(main_cart.pos, "+1 ITEM", GREEN);
 
     bool consumed = shopping_list_consume(&local_shopping_list, picked);
     if (consumed) {
-      shopping_list_len = local_shopping_list.len;
-      for (int i = 0; i < local_shopping_list.len; i++) {
-        shopping_list[i] = local_shopping_list.items[i];
-      }
+      sync_local_shopping_list();
     }
 
     if (g_net.mode != NET_MODE_SINGLE) {
@@ -578,6 +1020,70 @@ static void DrawTickFrame(void) {
     DrawCircleV(mouse, 0.1f, ORANGE);
   }
 
+  // Draw floor shockwaves
+  for (int i = 0; i < MAX_SHOCKWAVES; i++) {
+    if (!shockwaves[i].active)
+      continue;
+    float elapsed = now - shockwaves[i].start_time;
+    if (elapsed >= shockwaves[i].duration) {
+      shockwaves[i].active = false;
+      continue;
+    }
+    float p = elapsed / shockwaves[i].duration;
+    float r = shockwaves[i].max_radius * p;
+    float alpha = 1.0f - p;
+    Color c = shockwaves[i].color;
+    c.a = (unsigned char)(255.0f * alpha);
+    float thick = 0.04f * (1.0f - p * 0.5f);
+    DrawRing(shockwaves[i].pos, fmaxf(r - thick, 0.0f), r, 0.0f, 360.0f, 32, c);
+  }
+
+  // Draw dropped item floor beacons / glowing auras
+  for (int i = 0; i < MAX_DROPPED_FLOOR_ITEMS; i++) {
+    if (!dropped_floor_items[i].active)
+      continue;
+    Vector2 pos = dropped_floor_items[i].pos;
+    int owner = dropped_floor_items[i].owner_player_id;
+    Color base_col = (owner == 1) ? (Color){40, 130, 255, 255}
+                                  : (Color){240, 50, 50, 255};
+    float pulse = 0.5f + 0.5f * sinf(now * 5.0f);
+    float rad = 0.32f + 0.06f * pulse;
+
+    // Glowing inner circle
+    Color fill_col = base_col;
+    fill_col.a = (unsigned char)(70 + 40 * pulse);
+    DrawCircleV(pos, rad, fill_col);
+
+    // Pulsing outer ring
+    Color ring_col = base_col;
+    ring_col.a = (unsigned char)(180 + 75 * pulse);
+    DrawRing(pos, rad - 0.025f, rad, 0.0f, 360.0f, 32, ring_col);
+
+    // 4 orbital energy dots rotating around the item
+    for (int k = 0; k < 4; k++) {
+      float ang = now * 2.8f + (float)k * (PI * 0.5f);
+      Vector2 dot_pos = {pos.x + cosf(ang) * (rad + 0.05f),
+                         pos.y + sinf(ang) * (rad + 0.05f)};
+      DrawCircleV(dot_pos, 0.03f, ring_col);
+    }
+  }
+
+  // Draw ground shadows for flying items
+  for (int i = 0; i < MAX_FLYING_DROPS; i++) {
+    if (!flying_drops[i].active)
+      continue;
+    float elapsed = now - flying_drops[i].start_time;
+    if (elapsed >= flying_drops[i].duration)
+      continue;
+    float p = elapsed / flying_drops[i].duration;
+    Vector2 ground_pos = Vector2Lerp(flying_drops[i].start_pos,
+                                     flying_drops[i].end_pos, p);
+    float h = 4.0f * 0.85f * p * (1.0f - p);
+    float sh_rad = 0.16f * (1.0f - h * 0.4f);
+    DrawCircleV(ground_pos, fmaxf(sh_rad, 0.04f),
+                (Color){0, 0, 0, (unsigned char)(120 * (1.0f - h * 0.5f))});
+  }
+
   // Draw remote cart
   if (has_remote_cart) {
     Item rem_item = {.pos = remote_pick_pos};
@@ -592,6 +1098,30 @@ static void DrawTickFrame(void) {
 
   itemarr_draw(items, Vector2Zero(), 0.0f, topleft, botright);
 
+  // Draw flying dropped items in parabolic arc
+  for (int i = 0; i < MAX_FLYING_DROPS; i++) {
+    if (!flying_drops[i].active)
+      continue;
+    float elapsed = now - flying_drops[i].start_time;
+    if (elapsed >= flying_drops[i].duration) {
+      flying_drops[i].active = false;
+      Color land_col = (flying_drops[i].owner_player_id == 1)
+                           ? (Color){60, 150, 255, 255}
+                           : (Color){255, 60, 60, 255};
+      spawn_shockwave(flying_drops[i].end_pos, 0.65f, land_col);
+      continue;
+    }
+    float p = elapsed / flying_drops[i].duration;
+    Vector2 ground_pos = Vector2Lerp(flying_drops[i].start_pos,
+                                     flying_drops[i].end_pos, p);
+    float h = 4.0f * 0.85f * p * (1.0f - p);
+    Item flying_item = flying_drops[i].item;
+    flying_item.pos = (Vector2){ground_pos.x, ground_pos.y - h};
+    flying_item.rot = flying_item.rot + p * 4.0f * PI;
+    flying_item.scale *= (1.0f + 0.35f * sinf(p * PI));
+    item_draw(flying_item, Vector2Zero(), 0.0f);
+  }
+
   // Draw hands
   if (has_remote_cart) {
     Item rem_item = {.pos = remote_pick_pos};
@@ -602,6 +1132,98 @@ static void DrawTickFrame(void) {
                   pick_item_idx >= 0 ? &items.items[pick_item_idx] : NULL);
 
   EndMode2D();
+
+  // Floating badges above dropped floor items
+  for (int i = 0; i < MAX_DROPPED_FLOOR_ITEMS; i++) {
+    if (!dropped_floor_items[i].active)
+      continue;
+    Vector2 sp = GetWorldToScreen2D(dropped_floor_items[i].pos, cam);
+    if (sp.x < -100 || sp.x > GetScreenWidth() + 100 || sp.y < -100 ||
+        sp.y > GetScreenHeight() + 100)
+      continue;
+
+    float bob = sinf(now * 5.5f) * 4.0f;
+    float badge_y = sp.y - 42.0f + bob;
+
+    bool is_targeted = (pick_item_idx >= 0 &&
+                        pick_item_idx < items.len &&
+                        items.items[pick_item_idx].image.id ==
+                            (unsigned int)dropped_floor_items[i].texture_id);
+
+    if (is_targeted) {
+      // Golden glowing "PICK UP [E]" prompt
+      const char *prompt = "PICK UP [E]";
+      int font_sz = 14;
+      int tw = MeasureText(prompt, font_sz);
+      float bw = tw + 20.0f;
+      float bh = 22.0f;
+      float bx = sp.x - bw * 0.5f;
+
+      DrawRectangleRounded((Rectangle){bx, badge_y, bw, bh}, 0.35f, 4,
+                           (Color){255, 230, 80, 240});
+      DrawRectangleRoundedLinesEx((Rectangle){bx, badge_y, bw, bh}, 0.35f, 4,
+                                  2.0f, (Color){200, 130, 0, 255});
+      DrawText(prompt, (int)(bx + 10.0f), (int)(badge_y + 4.0f), font_sz,
+               BLACK);
+
+      // Downward pointer arrow
+      DrawTriangle((Vector2){sp.x - 5.0f, badge_y + bh},
+                   (Vector2){sp.x + 5.0f, badge_y + bh},
+                   (Vector2){sp.x, badge_y + bh + 6.0f},
+                   (Color){200, 130, 0, 255});
+    } else {
+      // Owner-tinted "DROPPED" badge
+      int owner = dropped_floor_items[i].owner_player_id;
+      Color bg_col = (owner == 1) ? (Color){30, 90, 200, 220}
+                                  : (Color){180, 30, 30, 220};
+      Color border_col = (owner == 1) ? (Color){100, 180, 255, 255}
+                                      : (Color){255, 120, 120, 255};
+      const char *label = "DROPPED";
+      int font_sz = 11;
+      int tw = MeasureText(label, font_sz);
+      float bw = tw + 14.0f;
+      float bh = 17.0f;
+      float bx = sp.x - bw * 0.5f;
+
+      DrawRectangleRounded((Rectangle){bx, badge_y, bw, bh}, 0.35f, 4, bg_col);
+      DrawRectangleRoundedLinesEx((Rectangle){bx, badge_y, bw, bh}, 0.35f, 4,
+                                  1.5f, border_col);
+      DrawText(label, (int)(bx + 7.0f), (int)(badge_y + 3.0f), font_sz, WHITE);
+
+      DrawTriangle((Vector2){sp.x - 4.0f, badge_y + bh},
+                   (Vector2){sp.x + 4.0f, badge_y + bh},
+                   (Vector2){sp.x, badge_y + bh + 4.0f}, border_col);
+    }
+  }
+
+  // Floating text effects drifting upward
+  for (int i = 0; i < MAX_FLOATING_TEXTS; i++) {
+    if (!floating_texts[i].active)
+      continue;
+    float elapsed = now - floating_texts[i].start_time;
+    if (elapsed >= floating_texts[i].duration) {
+      floating_texts[i].active = false;
+      continue;
+    }
+    float p = elapsed / floating_texts[i].duration;
+    Vector2 world_pos = {floating_texts[i].pos.x,
+                         floating_texts[i].pos.y - p * 0.9f};
+    Vector2 sp = GetWorldToScreen2D(world_pos, cam);
+    float alpha = 1.0f - p;
+    Color c = floating_texts[i].color;
+    c.a = (unsigned char)(255.0f * alpha);
+
+    int font_sz = 18;
+    int tw = MeasureText(floating_texts[i].text, font_sz);
+    float bx = sp.x - tw * 0.5f;
+    float by = sp.y;
+
+    Color shadow_c = BLACK;
+    shadow_c.a = (unsigned char)(160.0f * alpha);
+    DrawText(floating_texts[i].text, (int)(bx + 1.0f), (int)(by + 1.0f), font_sz,
+             shadow_c);
+    DrawText(floating_texts[i].text, (int)bx, (int)by, font_sz, c);
+  }
 
   // --- SHOPPING LIST HUD ---
   int my_id = (g_net.mode == NET_MODE_CLIENT ? 2 : 1);
@@ -699,6 +1321,22 @@ static void DrawTickFrame(void) {
     // Ping
     const char *ping_str = TextFormat("Ping: %.0f ms", g_net.rtt_ms);
     DrawText(ping_str, (int)(badge_x + badge_w + 14.0f), 20, 14, DARKGRAY);
+
+    if (now - crash_toast_time < 2.5f && crash_toast_text[0] != '\0') {
+      float toast_w = 400.0f;
+      float toast_h = 28.0f;
+      float toast_x = ((float)GetScreenWidth() - toast_w) * 0.5f;
+      float toast_y = 56.0f;
+      DrawRectangleRounded((Rectangle){toast_x, toast_y, toast_w, toast_h},
+                           0.25f, 4, (Color){255, 245, 230, 240});
+      DrawRectangleRoundedLinesEx(
+          (Rectangle){toast_x, toast_y, toast_w, toast_h}, 0.25f, 4, 1.5f,
+          ORANGE);
+      DrawText(
+          crash_toast_text,
+          (int)(toast_x + (toast_w - MeasureText(crash_toast_text, 14)) * 0.5f),
+          (int)(toast_y + 7.0f), 14, DARKGRAY);
+    }
   } else if (g_net.mode == NET_MODE_HOST && !has_remote_cart) {
     float badge_w = 460.0f;
     float badge_x = ((float)GetScreenWidth() - badge_w) * 0.5f;

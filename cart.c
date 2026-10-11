@@ -259,11 +259,11 @@ void cart_tick(Cart *cart, WallArr walls, int num_walls, float delta) {
       if (collision_info.collided) {
         collision_occurred = true;
 
-        cart->pos = Vector2Add(cart->pos, collision_info.mtv);
-
         Vector2 contact_point_world = find_contact_point_on_cart(
             &cart_world_poly, Vector2Negate(collision_info.normal));
         Vector2 r_cart = Vector2Subtract(contact_point_world, cart->pos);
+
+        cart->pos = Vector2Add(cart->pos, collision_info.mtv);
 
         Vector2 r_cart_perp_vel =
             (Vector2){-cart->ang_vel * r_cart.y, cart->ang_vel * r_cart.x};
@@ -326,14 +326,26 @@ bool cart_collide_cart(Cart *c1, Cart *c2, Vector2 *out_bump_impulse,
   if (out_bump_ang)
     *out_bump_ang = 0.0f;
 
+  // Broadphase distance check
   Vector2 delta = Vector2Subtract(c1->pos, c2->pos);
   float dist = Vector2Length(delta);
-  float min_dist = c1->max_vrt_dist + c2->max_vrt_dist;
-  if (dist >= min_dist || dist < 0.001f)
+  float max_reach = c1->max_vrt_dist + c2->max_vrt_dist + 0.15f;
+  if (dist >= max_reach || dist < 0.001f)
     return false;
 
-  Vector2 n = Vector2Scale(delta, 1.0f / dist);
-  float penetration = min_dist - dist;
+  ColliPoly poly1 = cart_get_world_collider(c1);
+  ColliPoly poly2 = cart_get_world_collider(c2);
+
+  CollisionInfo info = get_polygon_collision_info(poly1, poly2);
+
+  if (!info.collided || info.depth <= 0.001f) {
+    collipoly_free(&poly1);
+    collipoly_free(&poly2);
+    return false;
+  }
+
+  Vector2 n = info.normal; // Normal points from poly2 (c2) to poly1 (c1)
+  float penetration = info.depth;
 
   float m1 = c1->mass > 0.1f ? c1->mass : 12.0f;
   float m2 = c2->mass > 0.1f ? c2->mass : 12.0f;
@@ -341,51 +353,72 @@ bool cart_collide_cart(Cart *c1, Cart *c2, Vector2 *out_bump_impulse,
   float inv_m2 = 1.0f / m2;
   float total_inv_m = inv_m1 + inv_m2;
 
+  // Position separation along the exact penetration normal
   c1->pos = Vector2Add(c1->pos,
                        Vector2Scale(n, penetration * (inv_m1 / total_inv_m)));
   c2->pos = Vector2Subtract(
       c2->pos, Vector2Scale(n, penetration * (inv_m2 / total_inv_m)));
 
-  Vector2 v_rel = Vector2Subtract(c1->vel, c2->vel);
+  // Contact point: mutual contact point between both carts
+  Vector2 cp1 = find_contact_point_on_cart(&poly1, Vector2Negate(n));
+  Vector2 cp2 = find_contact_point_on_cart(&poly2, n);
+  Vector2 contact_point = Vector2Scale(Vector2Add(cp1, cp2), 0.5f);
+  Vector2 r1 = Vector2Subtract(contact_point, c1->pos);
+  Vector2 r2 = Vector2Subtract(contact_point, c2->pos);
+
+  collipoly_free(&poly1);
+  collipoly_free(&poly2);
+
+  // Contact velocities including angular rotation: v_p = v + w x r
+  Vector2 v1_contact = (Vector2){c1->vel.x - c1->ang_vel * r1.y,
+                                 c1->vel.y + c1->ang_vel * r1.x};
+  Vector2 v2_contact = (Vector2){c2->vel.x - c2->ang_vel * r2.y,
+                                 c2->vel.y + c2->ang_vel * r2.x};
+  Vector2 v_rel = Vector2Subtract(v1_contact, v2_contact);
   float vn = Vector2DotProduct(v_rel, n);
+
   if (vn >= 0.0f)
     return false;
 
-  // Punchy arcade bumper response: energetic restitution and bonus charging
-  // kick
-  float restitution = 1.15f;
+  float i1 = c1->mom_inertia > 0.1f ? c1->mom_inertia : 0.6f;
+  float i2 = c2->mom_inertia > 0.1f ? c2->mom_inertia : 0.6f;
+
+  float r1_cross_n = (r1.x * n.y) - (r1.y * n.x);
+  float r2_cross_n = (r2.x * n.y) - (r2.y * n.x);
+  float Kn = total_inv_m + (r1_cross_n * r1_cross_n) / i1 +
+             (r2_cross_n * r2_cross_n) / i2;
+
+  // Arcade restitution response: punchy bounce
+  float restitution = 1.20f;
   float impact_speed = -vn;
-  float boost = (impact_speed > 0.35f) ? 1.5f : 1.0f;
-  float jn = -(1.0f + restitution) * vn / total_inv_m * boost;
+  float boost = (impact_speed > 0.20f) ? 1.4f : 1.0f;
+  float jn = -(1.0f + restitution) * vn / (Kn > EPSILON ? Kn : total_inv_m) * boost;
 
   Vector2 impulse = Vector2Scale(n, jn);
 
   c1->vel = Vector2Add(c1->vel, Vector2Scale(impulse, inv_m1));
   c2->vel = Vector2Subtract(c2->vel, Vector2Scale(impulse, inv_m2));
 
-  float i1 = c1->mom_inertia > 0.1f ? c1->mom_inertia : 0.6f;
-  float i2 = c2->mom_inertia > 0.1f ? c2->mom_inertia : 0.6f;
-  float torque = ((n.x * v_rel.y - n.y * v_rel.x) * 1.5f) + (n.y * 1.0f);
-  c1->ang_vel += torque / i1;
-  c2->ang_vel -= torque / i2;
+  float torque1 = (r1_cross_n * jn);
+  float torque2 = -(r2_cross_n * jn);
+  c1->ang_vel += torque1 / i1;
+  c2->ang_vel += torque2 / i2;
 
   if (out_bump_impulse && out_bump_ang) {
     *out_bump_impulse = Vector2Scale(impulse, -inv_m2);
-    *out_bump_ang = -torque / i2;
+    *out_bump_ang = torque2 / i2;
   }
 
-  return (impact_speed > 0.35f);
+  return (impact_speed > 0.20f);
 }
 
-Item cart_consume_item(Cart *cart, ItemArr *items, int index) {
-  Item item = items->items[index];
-
+void cart_add_item(Cart *cart, Item item) {
   ColliPoly padd_collider = {
       .len = cart->collider.len,
       .items = malloc(cart->collider.len * sizeof(Vector2)),
   };
   if (!padd_collider.items)
-    perror_exit("cart_consume_item malloc");
+    perror_exit("cart_add_item malloc");
 
   for (int i = 0; i < cart->collider.len; i++) {
     Vector2 vrt = cart->collider.items[i];
@@ -399,9 +432,35 @@ Item cart_consume_item(Cart *cart, ItemArr *items, int index) {
   item.pos = item_pos;
   item.rot = mall_rand_float() * 2.0f * PI;
   itemarr_push(&cart->items, item);
-  itemarr_remove(items, index);
 
   cart_recalculate_mass_inertia(cart);
+}
+
+bool cart_remove_item(Cart *cart, int index, Item *out_item) {
+  if (!cart || index < 0 || index >= cart->items.len)
+    return false;
+  if (out_item)
+    *out_item = cart->items.items[index];
+  itemarr_remove(&cart->items, index);
+  cart_recalculate_mass_inertia(cart);
+  return true;
+}
+
+bool cart_remove_item_by_texture_id(Cart *cart, unsigned int texture_id, Item *out_item) {
+  if (!cart)
+    return false;
+  for (int i = 0; i < cart->items.len; i++) {
+    if (cart->items.items[i].image.id == texture_id) {
+      return cart_remove_item(cart, i, out_item);
+    }
+  }
+  return false;
+}
+
+Item cart_consume_item(Cart *cart, ItemArr *items, int index) {
+  Item item = items->items[index];
+  itemarr_remove(items, index);
+  cart_add_item(cart, item);
   return item;
 }
 
