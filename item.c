@@ -1,4 +1,5 @@
 #include "item.h"
+#include "mall.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -964,20 +965,46 @@ void fill_items_table(void) {
 }
 
 void fill_shopping_list(void) {
-  int target_len = SHOPPING_LIST_MAX_LEN;
-  if (used_items_len < target_len)
-    target_len = used_items_len;
+  int desired = (g_config.shopping_list_count > 0) ? (int)g_config.shopping_list_count : 5;
+  if (desired > SHOPPING_LIST_MAX_LEN) desired = SHOPPING_LIST_MAX_LEN;
+
+  // Filter candidates by item_variety if requested
+  // 0 = All Sections, 1 = Fresh (Bakery=2 & Produce=4), 2 = Pantry (Meat=1 & Dairy=3)
+  int candidates[NUM_ITEMS];
+  int cand_count = 0;
+  for (int i = 0; i < used_items_len; i++) {
+    int idx = used_items[i];
+    int sec = item_sections[idx];
+    bool ok = true;
+    if (g_config.item_variety == 1) {
+      ok = (sec == 2 || sec == 4);
+    } else if (g_config.item_variety == 2) {
+      ok = (sec == 1 || sec == 3);
+    }
+    if (ok) {
+      candidates[cand_count++] = idx;
+    }
+  }
+
+  // Fallback to all used items if not enough items in filtered variety
+  if (cand_count < desired) {
+    for (int i = 0; i < used_items_len; i++) {
+      candidates[i] = used_items[i];
+    }
+    cand_count = used_items_len;
+  }
+
+  int target_len = (desired < cand_count) ? desired : cand_count;
   shopping_list_len = target_len;
 
   for (int i = 0; i < target_len; i++) {
   loopstart:;
-    int num = used_items_len > 0
-                  ? (int)(mall_rand_u32() % (uint32_t)used_items_len)
-                  : 0;
-    int item_idx = used_items[num];
-    for (int j = 0; j < i; j++)
+    int num = cand_count > 0 ? (int)(mall_rand_u32() % (uint32_t)cand_count) : 0;
+    int item_idx = candidates[num];
+    for (int j = 0; j < i; j++) {
       if (shopping_list[j] == item_idx)
         goto loopstart;
+    }
     shopping_list[i] = item_idx;
   }
 }

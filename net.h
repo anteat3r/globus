@@ -51,6 +51,7 @@ typedef struct {
 typedef struct {
   PktHeader header;
   uint32_t seed;
+  RoomConfig config;
   uint8_t shopping_list_count;
   int16_t shopping_list[SHOPPING_LIST_MAX_LEN];
   uint8_t grid_mask[NET_GRID_MASK_SIZE];
@@ -159,8 +160,8 @@ bool net_send(const void *data, size_t size);
 int net_poll(NetPacket *pkt);
 
 void net_send_hello(void);
-void net_send_init(uint32_t seed, const int *slist, int slist_len,
-                   const uint8_t *grid_mask);
+void net_send_init(uint32_t seed, const RoomConfig *config, const int *slist,
+                   int slist_len, const uint8_t *grid_mask);
 void net_send_ready(void);
 void net_send_cart_state(Vector2 pos, Vector2 vel, float rot, float ang_vel,
                          int pick_side, Vector2 pick_pos, float mass);

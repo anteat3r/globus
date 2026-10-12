@@ -52,6 +52,7 @@ const server = http.createServer((req, res) => {
         id,
         players: count,
         waiting: count === 1,
+        config: room.config,
         createdAt: room.createdAt,
       });
     }
@@ -68,7 +69,7 @@ const server = http.createServer((req, res) => {
     const available = [];
     for (const [id, room] of rooms.entries()) {
       if (room.host && !room.client) {
-        available.push({ id, createdAt: room.createdAt });
+        available.push({ id, createdAt: room.createdAt, config: room.config });
       }
     }
     return res.end(JSON.stringify({ rooms: available }));
@@ -110,6 +111,7 @@ const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (request, socket, head) => {
   const parsedUrl = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
   if (parsedUrl.pathname === '/ws') {
+    socket.setNoDelay(true);
     wss.handleUpgrade(request, socket, head, (ws) => {
       wss.emit('connection', ws, request);
     });
@@ -119,6 +121,9 @@ server.on('upgrade', (request, socket, head) => {
 });
 
 wss.on('connection', (ws) => {
+  if (ws._socket) {
+    ws._socket.setNoDelay(true);
+  }
   ws.room = null;
   ws.role = null; // 'host' or 'client'
   ws.isAlive = true;
@@ -135,6 +140,11 @@ wss.on('connection', (ws) => {
         if (room) {
           const peer = ws.role === 'host' ? room.client : room.host;
           if (peer && peer.readyState === WebSocket.OPEN) {
+            // Buffer bloat mitigation: if peer socket buffer is severely backlogged,
+            // drop stale position packets (header type 4 = PKT_CART_STATE) to avoid multi-second lag buildup
+            if (peer.bufferedAmount > 32768 && data && data.length > 0 && data[0] === 4) {
+              return;
+            }
             peer.send(data, { binary: true });
           }
         }
@@ -190,6 +200,7 @@ function handleControlMessage(ws, msg) {
         id: roomId,
         host: ws,
         client: null,
+        config: msg.config || null,
         createdAt: Date.now(),
       };
       rooms.set(roomId, room);
@@ -258,6 +269,7 @@ function handleControlMessage(ws, msg) {
           id: roomId,
           host: ws,
           client: null,
+          config: msg.config || null,
           createdAt: Date.now(),
         };
         rooms.set(roomId, room);
@@ -331,7 +343,7 @@ function sendRoomList(targetWs) {
   const available = [];
   for (const [id, room] of rooms.entries()) {
     if (room.host && (!room.client || room.client.readyState !== WebSocket.OPEN)) {
-      available.push({ id, createdAt: room.createdAt });
+      available.push({ id, createdAt: room.createdAt, config: room.config });
     }
   }
   sendJson(targetWs, { type: 'room_list', rooms: available });
@@ -341,7 +353,7 @@ function broadcastRoomList() {
   const available = [];
   for (const [id, room] of rooms.entries()) {
     if (room.host && (!room.client || room.client.readyState !== WebSocket.OPEN)) {
-      available.push({ id, createdAt: room.createdAt });
+      available.push({ id, createdAt: room.createdAt, config: room.config });
     }
   }
   const payload = JSON.stringify({ type: 'room_list', rooms: available });

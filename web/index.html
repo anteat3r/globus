@@ -423,7 +423,7 @@
       padding: 10px 20px;
       border-radius: 8px;
       box-shadow: 0 10px 25px rgba(0,0,0,0.4);
-      z-index: 100;
+      z-index: 2000;
       transform: translateY(100px);
       opacity: 0;
       transition: all 0.3s ease;
@@ -432,6 +432,202 @@
     #toast.show {
       transform: translateY(0);
       opacity: 1;
+    }
+
+    /* Configuration Modal */
+    #config-modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.88);
+      backdrop-filter: blur(8px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      z-index: 1000;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.2s ease, visibility 0.2s;
+    }
+    #config-modal.show {
+      opacity: 1;
+      visibility: visible;
+    }
+    .modal-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 16px;
+      width: 100%;
+      max-width: 680px;
+      max-height: 90vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 25px 60px rgba(0,0,0,0.7);
+      overflow: hidden;
+    }
+    .modal-header {
+      padding: 16px 22px;
+      border-bottom: 1px solid #334155;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(15, 23, 42, 0.6);
+    }
+    .modal-header h2 {
+      font-size: 1.25rem;
+      font-weight: 800;
+      color: #f8fafc;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .modal-close-btn {
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      font-size: 1.5rem;
+      cursor: pointer;
+      line-height: 1;
+      padding: 4px;
+    }
+    .modal-close-btn:hover { color: #fff; }
+    .modal-body {
+      padding: 20px 24px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+    .modal-section {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .modal-section-title {
+      font-size: 0.82rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #60a5fa;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .preset-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .preset-pill {
+      background: #0f172a;
+      border: 1px solid #334155;
+      color: #e2e8f0;
+      padding: 5px 10px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      font-weight: 600;
+      transition: all 0.15s;
+    }
+    .preset-pill:hover, .preset-pill.active {
+      background: #2563eb;
+      border-color: #3b82f6;
+      color: #fff;
+      transform: translateY(-1px);
+    }
+    .field-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .field-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .field-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.8rem;
+      color: #cbd5e1;
+      font-weight: 600;
+    }
+    .field-val {
+      color: #60a5fa;
+      font-family: monospace;
+      font-weight: 700;
+    }
+    .field-slider {
+      width: 100%;
+      accent-color: #3b82f6;
+      cursor: pointer;
+    }
+    .field-select {
+      background: #0f172a;
+      border: 1px solid #334155;
+      color: #fff;
+      padding: 7px 10px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      outline: none;
+    }
+    .field-select:focus {
+      border-color: #3b82f6;
+    }
+    .pill-group {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .opt-chip {
+      background: #0f172a;
+      border: 1px solid #334155;
+      color: #94a3b8;
+      padding: 5px 9px;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .opt-chip.active {
+      background: #2563eb;
+      border-color: #3b82f6;
+      color: #fff;
+    }
+    .wfc-editor-box {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 12px;
+    }
+    #wfc-canvas {
+      width: 160px;
+      height: 160px;
+      image-rendering: pixelated;
+      border: 2px solid #475569;
+      border-radius: 6px;
+      cursor: crosshair;
+      background: #000;
+      flex-shrink: 0;
+    }
+    .wfc-info {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      flex: 1;
+      font-size: 0.8rem;
+      color: #94a3b8;
+    }
+    .modal-footer {
+      padding: 14px 22px;
+      border-top: 1px solid #334155;
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      background: rgba(15, 23, 42, 0.6);
     }
   </style>
 </head>
@@ -493,17 +689,22 @@
           </div>
 
           <div class="mode-buttons">
-            <button class="btn btn-secondary" onclick="startSingleplayer()">
-              🛒 Solo Practice
-            </button>
+            <div style="display: flex; gap: 8px;">
+              <button class="btn btn-secondary" style="flex: 1;" onclick="startSingleplayer()">
+                🛒 Solo Practice
+              </button>
+              <button class="btn btn-secondary" style="padding: 12px 14px;" onclick="openConfigModal('solo')" title="Configure Solo Practice Settings">
+                ⚙️
+              </button>
+            </div>
             <button class="btn btn-primary" onclick="startQuickMatch()">
               ⚡ Quick Match
             </button>
           </div>
 
           <div class="join-group">
-            <button class="btn btn-success" onclick="createRoom()">
-              🏠 Host Room
+            <button class="btn btn-success" onclick="openConfigModal('host')">
+              ⚙️ Host Room
             </button>
             <input type="text" id="room-input" class="join-input" placeholder="ROOM CODE" maxlength="8">
             <button class="btn btn-primary" onclick="joinRoomFromInput()">
@@ -552,6 +753,215 @@
           </div>
         </div>
       </div>
+
+      <!-- Match & Room Configuration Modal -->
+      <div id="config-modal">
+        <div class="modal-card">
+          <div class="modal-header">
+            <h2 id="modal-title">⚙️ Host Room Configuration</h2>
+            <button class="modal-close-btn" onclick="closeConfigModal()">✕</button>
+          </div>
+
+          <div class="modal-body">
+            <!-- 1. Quick Presets -->
+            <div class="modal-section">
+              <div class="modal-section-title">⚡ 1-Click Game Presets</div>
+              <div class="preset-bar">
+                <button type="button" class="preset-pill active" onclick="applyPreset('standard')">🛒 Standard</button>
+                <button type="button" class="preset-pill" onclick="applyPreset('drift')">🏎️ Tokyo Drift</button>
+                <button type="button" class="preset-pill" onclick="applyPreset('demolition')">💥 Demolition Derby</button>
+                <button type="button" class="preset-pill" onclick="applyPreset('sprint')">⚡ Express Sprint</button>
+                <button type="button" class="preset-pill" onclick="applyPreset('mega')">🏬 Mega Hypermarket</button>
+              </div>
+            </div>
+
+            <!-- 2. Supermarket Layout & WFC -->
+            <div class="modal-section">
+              <div class="modal-section-title">📐 Supermarket Dimensions & Architecture</div>
+              <div class="field-grid">
+                <div class="field-group">
+                  <div class="field-label">
+                    <span>Store Dimensions</span>
+                    <span id="cfg-size-val" class="field-val">24 × 24</span>
+                  </div>
+                  <select id="cfg-mall-size" class="field-select" onchange="onMallSizeChange()">
+                    <option value="18">18 × 18 (Compact Quick)</option>
+                    <option value="24" selected>24 × 24 (Standard Supermarket)</option>
+                    <option value="30">30 × 30 (Sprawling Market)</option>
+                    <option value="36">36 × 36 (Mega Hypermarket)</option>
+                  </select>
+                </div>
+                <div class="field-group">
+                  <div class="field-label">
+                    <span>WFC Layout Pattern</span>
+                    <span id="cfg-wfc-val" class="field-val">Classic</span>
+                  </div>
+                  <select id="cfg-wfc-preset" class="field-select" onchange="onWfcPresetSelectChange()">
+                    <option value="0" selected>Classic Supermarket</option>
+                    <option value="1">Parallel Aisles</option>
+                    <option value="2">Warehouse Grid</option>
+                    <option value="3">Maze Labyrinth</option>
+                    <option value="4">Open Plaza</option>
+                    <option value="5">Custom 16×16 Bitmap</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- Interactive 16x16 WFC Editor -->
+              <div class="wfc-editor-box">
+                <canvas id="wfc-canvas" width="16" height="16" title="Click or drag to draw shelf obstacles (Gray) vs walkable aisles (Black)"></canvas>
+                <div class="wfc-info">
+                  <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <strong style="color: #cbd5e1;">Interactive WFC Motif Editor</strong>
+                    <span id="wfc-density-badge" style="color: #60a5fa; font-weight: 700; font-family: monospace;">Shelf Density: 25.8%</span>
+                  </div>
+                  <div>Paint on the 16×16 canvas below to design the architectural motif. The WFC generator repeats and collapses this pattern across the store.</div>
+                  <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px;">
+                    <button type="button" class="opt-chip" onclick="resetWfcToPreset()">↺ Reset Preset</button>
+                    <button type="button" class="opt-chip" onclick="invertWfcCanvas()">⇄ Invert</button>
+                    <button type="button" class="opt-chip" onclick="clearWfcCanvas()">✕ Clear All</button>
+                    <button type="button" class="opt-chip" onclick="stripeWfcCanvas()">≡ Aisles</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 3. Shopping Rules -->
+            <div class="modal-section">
+              <div class="modal-section-title">🛒 Shopping List & Groceries</div>
+              <div class="field-grid">
+                <div class="field-group">
+                  <div class="field-label">
+                    <span>Shopping List Items</span>
+                    <span id="cfg-items-val" class="field-val">5 Items</span>
+                  </div>
+                  <input type="range" id="cfg-shopping-count" class="field-slider" min="1" max="16" step="1" value="5" oninput="updateSliderLabels()">
+                </div>
+                <div class="field-group">
+                  <div class="field-label">
+                    <span>Department Variety</span>
+                    <span class="field-val" id="cfg-variety-val">All Sections</span>
+                  </div>
+                  <select id="cfg-item-variety" class="field-select" onchange="updateSliderLabels()">
+                    <option value="0" selected>All Departments (Mixed)</option>
+                    <option value="1">Fresh Only (Bakery & Produce)</option>
+                    <option value="2">Pantry Only (Dairy & Meat)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- 4. Driving & Physics -->
+            <div class="modal-section">
+              <div class="modal-section-title">🏎️ Driving Physics & Handling</div>
+              <div class="field-grid">
+                <div class="field-group">
+                  <div class="field-label">
+                    <span>Push Force</span>
+                    <span id="cfg-force-val" class="field-val">45 N</span>
+                  </div>
+                  <input type="range" id="cfg-push-force" class="field-slider" min="25" max="80" step="1" value="45" oninput="updateSliderLabels()">
+                </div>
+                <div class="field-group">
+                  <div class="field-label">
+                    <span>Wheel Lateral Grip (Drift)</span>
+                    <span id="cfg-grip-val" class="field-val">1.00</span>
+                  </div>
+                  <input type="range" id="cfg-lateral-grip" class="field-slider" min="0.2" max="2.2" step="0.05" value="1.0" oninput="updateSliderLabels()">
+                </div>
+                <div class="field-group">
+                  <div class="field-label">
+                    <span>Rolling Friction</span>
+                    <span id="cfg-friction-val" class="field-val">0.050</span>
+                  </div>
+                  <input type="range" id="cfg-roll-friction" class="field-slider" min="0.01" max="0.14" step="0.005" value="0.05" oninput="updateSliderLabels()">
+                </div>
+                <div class="field-group">
+                  <div class="field-label">
+                    <span>Angular Damping</span>
+                    <span id="cfg-angular-val" class="field-val">2.20</span>
+                  </div>
+                  <input type="range" id="cfg-angular-friction" class="field-slider" min="0.5" max="5.0" step="0.1" value="2.2" oninput="updateSliderLabels()">
+                </div>
+                <div class="field-group">
+                  <div class="field-label">
+                    <span>Cart Mass</span>
+                    <span id="cfg-mass-val" class="field-val">35 kg</span>
+                  </div>
+                  <input type="range" id="cfg-cart-mass" class="field-slider" min="15" max="80" step="1" value="35" oninput="updateSliderLabels()">
+                </div>
+                <div class="field-group">
+                  <div class="field-label">
+                    <span>Wall Bounciness</span>
+                    <span id="cfg-restitution-val" class="field-val">0.20</span>
+                  </div>
+                  <input type="range" id="cfg-wall-restitution" class="field-slider" min="0.05" max="0.85" step="0.05" value="0.20" oninput="updateSliderLabels()">
+                </div>
+              </div>
+            </div>
+
+            <!-- 5. Collision Combat & Groceries -->
+            <div class="modal-section">
+              <div class="modal-section-title">💥 Combat & Item Theft Rules</div>
+              <div class="field-grid">
+                <div class="field-group">
+                  <div class="field-label">
+                    <span>Collision Theft Mode</span>
+                  </div>
+                  <select id="cfg-theft-mode" class="field-select">
+                    <option value="1" selected>Steal to Cart (from slower player)</option>
+                    <option value="2">Floor Drop Only (No direct stealing)</option>
+                    <option value="0">Disabled (Peaceful racing)</option>
+                  </select>
+                </div>
+                <div class="field-group">
+                  <div class="field-label">
+                    <span>Floor Drop on Crash</span>
+                  </div>
+                  <select id="cfg-floor-drops" class="field-select">
+                    <option value="1" selected>Drop 1 Item</option>
+                    <option value="2">Drop 2 Items</option>
+                    <option value="3">Drop All Items (Chaos)</option>
+                    <option value="0">None (Keep all items)</option>
+                  </select>
+                </div>
+                <div class="field-group">
+                  <div class="field-label">
+                    <span>Crash Bump Impulse</span>
+                    <span id="cfg-crash-val" class="field-val">1.00×</span>
+                  </div>
+                  <input type="range" id="cfg-crash-mult" class="field-slider" min="0.3" max="2.5" step="0.1" value="1.0" oninput="updateSliderLabels()">
+                </div>
+                <div class="field-group">
+                  <div class="field-label">
+                    <span>Min Speed Difference</span>
+                    <span id="cfg-speed-val" class="field-val">0.02 m/s</span>
+                  </div>
+                  <input type="range" id="cfg-min-speed" class="field-slider" min="0.01" max="0.30" step="0.01" value="0.02" oninput="updateSliderLabels()">
+                </div>
+              </div>
+            </div>
+
+            <!-- 6. Floor Aesthetics -->
+            <div class="modal-section">
+              <div class="modal-section-title">🎨 Floor Visual Theme</div>
+              <div class="field-group">
+                <select id="cfg-floor-theme" class="field-select">
+                  <option value="0" selected>Classic Supermarket (Clean Light Tile)</option>
+                  <option value="1">Warm Terrazzo (Amber & Earth)</option>
+                  <option value="2">Midnight Cyber (Dark Slate & Neon Grid)</option>
+                  <option value="3">Fresh Mint (Organic Green & Jade)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" onclick="closeConfigModal()">Cancel</button>
+            <button type="button" id="modal-submit-btn" class="btn btn-success" onclick="applyAndLaunch()">🚀 Launch Room</button>
+          </div>
+        </div>
+      </div>
     </div>
   </main>
 
@@ -563,6 +973,341 @@
     let currentRoom = null;
     let currentRole = null; // 'host' or 'client'
     let ws = null;
+
+    // --- Room & Physics Configuration ---
+    const WFC_PRESETS = [
+      // 0: Classic Supermarket
+      [0x00, 0x00, 0x3f, 0x1a, 0x77, 0x32, 0x01, 0x77, 0x30, 0x23, 0x33, 0x71, 0x13, 0x31, 0x30, 0x00, 0x23, 0x98, 0x03, 0x9c, 0x06, 0xd8, 0xe0, 0x03, 0xb0, 0x11, 0x11, 0x10, 0x11, 0x38, 0x03, 0x3c],
+      // 1: Parallel Aisles
+      [0x00, 0x00, 0x7f, 0xfe, 0x00, 0x00, 0x7f, 0xfe, 0x00, 0x00, 0x7f, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7f, 0xfe, 0x00, 0x00, 0x7f, 0xfe, 0x00, 0x00, 0x7f, 0xfe, 0x00, 0x00, 0x00, 0x00],
+      // 2: Warehouse Grid
+      [0x00, 0x00, 0x79, 0xe6, 0x79, 0xe6, 0x00, 0x00, 0x79, 0xe6, 0x79, 0xe6, 0x00, 0x00, 0x00, 0x00, 0x79, 0xe6, 0x79, 0xe6, 0x00, 0x00, 0x79, 0xe6, 0x79, 0xe6, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+      // 3: Maze Labyrinth
+      [0x00, 0x00, 0x7e, 0x7e, 0x42, 0x42, 0x5a, 0x5a, 0x42, 0x42, 0x7a, 0x5e, 0x08, 0x10, 0x38, 0x1c, 0x00, 0x00, 0x7a, 0x5e, 0x42, 0x42, 0x5a, 0x5a, 0x42, 0x42, 0x7e, 0x7e, 0x00, 0x00, 0x00, 0x00],
+      // 4: Open Plaza
+      [0x00, 0x00, 0x38, 0x1c, 0x38, 0x1c, 0x00, 0x00, 0x03, 0xc0, 0x03, 0xc0, 0x00, 0x00, 0x38, 0x1c, 0x38, 0x1c, 0x00, 0x00, 0x00, 0x00, 0x03, 0xc0, 0x03, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+    ];
+
+    let wfcBytes = new Uint8Array(WFC_PRESETS[0]);
+    let modalMode = 'host'; // 'host' or 'solo'
+    let isWfcDrawing = false;
+    let wfcDrawBit = 1;
+
+    const GAME_PRESETS = {
+      standard: {
+        mallSize: 24, wfcPreset: 0, shoppingCount: 5, itemVariety: 0,
+        pushForce: 45, lateralGrip: 1.0, rollFriction: 0.05, angularFriction: 2.2,
+        cartMass: 35, wallRestitution: 0.20, theftMode: 1, floorDrops: 1,
+        crashMult: 1.0, minSpeed: 0.02, floorTheme: 0
+      },
+      drift: {
+        mallSize: 24, wfcPreset: 4, shoppingCount: 5, itemVariety: 0,
+        pushForce: 62, lateralGrip: 0.35, rollFriction: 0.025, angularFriction: 1.2,
+        cartMass: 35, wallRestitution: 0.30, theftMode: 1, floorDrops: 1,
+        crashMult: 1.3, minSpeed: 0.02, floorTheme: 2
+      },
+      demolition: {
+        mallSize: 24, wfcPreset: 2, shoppingCount: 6, itemVariety: 0,
+        pushForce: 50, lateralGrip: 0.9, rollFriction: 0.04, angularFriction: 2.0,
+        cartMass: 65, wallRestitution: 0.65, theftMode: 1, floorDrops: 3,
+        crashMult: 2.0, minSpeed: 0.01, floorTheme: 1
+      },
+      sprint: {
+        mallSize: 18, wfcPreset: 1, shoppingCount: 3, itemVariety: 1,
+        pushForce: 55, lateralGrip: 1.1, rollFriction: 0.04, angularFriction: 2.5,
+        cartMass: 30, wallRestitution: 0.20, theftMode: 1, floorDrops: 1,
+        crashMult: 1.0, minSpeed: 0.03, floorTheme: 3
+      },
+      mega: {
+        mallSize: 36, wfcPreset: 2, shoppingCount: 10, itemVariety: 0,
+        pushForce: 48, lateralGrip: 1.0, rollFriction: 0.05, angularFriction: 2.2,
+        cartMass: 38, wallRestitution: 0.20, theftMode: 1, floorDrops: 1,
+        crashMult: 1.0, minSpeed: 0.02, floorTheme: 1
+      }
+    };
+
+    function applyPreset(name) {
+      const p = GAME_PRESETS[name];
+      if (!p) return;
+
+      document.querySelectorAll('.preset-pill').forEach(btn => {
+        btn.classList.toggle('active', btn.getAttribute('onclick') && btn.getAttribute('onclick').includes(name));
+      });
+
+      document.getElementById('cfg-mall-size').value = p.mallSize;
+      document.getElementById('cfg-wfc-preset').value = p.wfcPreset;
+      document.getElementById('cfg-shopping-count').value = p.shoppingCount;
+      document.getElementById('cfg-item-variety').value = p.itemVariety;
+      document.getElementById('cfg-push-force').value = p.pushForce;
+      document.getElementById('cfg-lateral-grip').value = p.lateralGrip;
+      document.getElementById('cfg-roll-friction').value = p.rollFriction;
+      document.getElementById('cfg-angular-friction').value = p.angularFriction;
+      document.getElementById('cfg-cart-mass').value = p.cartMass;
+      document.getElementById('cfg-wall-restitution').value = p.wallRestitution;
+      document.getElementById('cfg-theft-mode').value = p.theftMode;
+      document.getElementById('cfg-floor-drops').value = p.floorDrops;
+      document.getElementById('cfg-crash-mult').value = p.crashMult;
+      document.getElementById('cfg-min-speed').value = p.minSpeed;
+      document.getElementById('cfg-floor-theme').value = p.floorTheme;
+
+      if (p.wfcPreset < WFC_PRESETS.length) {
+        wfcBytes.set(WFC_PRESETS[p.wfcPreset]);
+      }
+      onMallSizeChange();
+      drawWfcCanvas();
+      updateSliderLabels();
+    }
+
+    function updateSliderLabels() {
+      const shopping = document.getElementById('cfg-shopping-count').value;
+      document.getElementById('cfg-items-val').innerText = `${shopping} Items`;
+
+      const force = document.getElementById('cfg-push-force').value;
+      document.getElementById('cfg-force-val').innerText = `${force} N`;
+
+      const grip = parseFloat(document.getElementById('cfg-lateral-grip').value).toFixed(2);
+      let gripText = grip;
+      if (grip <= 0.40) gripText += ' (Drift)';
+      else if (grip >= 1.50) gripText += ' (High Grip)';
+      document.getElementById('cfg-grip-val').innerText = gripText;
+
+      const roll = parseFloat(document.getElementById('cfg-roll-friction').value).toFixed(3);
+      document.getElementById('cfg-friction-val').innerText = roll;
+
+      const ang = parseFloat(document.getElementById('cfg-angular-friction').value).toFixed(2);
+      document.getElementById('cfg-angular-val').innerText = ang;
+
+      const mass = document.getElementById('cfg-cart-mass').value;
+      document.getElementById('cfg-mass-val').innerText = `${mass} kg`;
+
+      const rest = parseFloat(document.getElementById('cfg-wall-restitution').value).toFixed(2);
+      document.getElementById('cfg-restitution-val').innerText = rest;
+
+      const crash = parseFloat(document.getElementById('cfg-crash-mult').value).toFixed(1);
+      document.getElementById('cfg-crash-val').innerText = `${crash}×`;
+
+      const spd = parseFloat(document.getElementById('cfg-min-speed').value).toFixed(2);
+      document.getElementById('cfg-speed-val').innerText = `${spd} m/s`;
+
+      const variety = document.getElementById('cfg-item-variety').value;
+      const vLabels = ['All Sections', 'Fresh Only', 'Pantry Only'];
+      document.getElementById('cfg-variety-val').innerText = vLabels[variety] || 'Mixed';
+    }
+
+    function onMallSizeChange() {
+      const val = document.getElementById('cfg-mall-size').value;
+      document.getElementById('cfg-size-val').innerText = `${val} × ${val}`;
+    }
+
+    function onWfcPresetSelectChange() {
+      const val = parseInt(document.getElementById('cfg-wfc-preset').value, 10);
+      const names = ['Classic', 'Aisles', 'Warehouse', 'Maze', 'Plaza', 'Custom'];
+      document.getElementById('cfg-wfc-val').innerText = names[val] || 'Custom';
+      if (val >= 0 && val < WFC_PRESETS.length) {
+        wfcBytes.set(WFC_PRESETS[val]);
+        drawWfcCanvas();
+      }
+    }
+
+    function getWfcPixel(x, y) {
+      if (x < 0 || x >= 16 || y < 0 || y >= 16) return 0;
+      const byteIdx = y * 2 + (x >> 3);
+      const bit = x & 7;
+      return (wfcBytes[byteIdx] >> bit) & 1;
+    }
+
+    function setWfcPixel(x, y, val) {
+      if (x < 0 || x >= 16 || y < 0 || y >= 16) return;
+      const byteIdx = y * 2 + (x >> 3);
+      const bit = x & 7;
+      if (val) {
+        wfcBytes[byteIdx] |= (1 << bit);
+      } else {
+        wfcBytes[byteIdx] &= ~(1 << bit);
+      }
+    }
+
+    function drawWfcCanvas() {
+      const cvs = document.getElementById('wfc-canvas');
+      if (!cvs) return;
+      const ctx = cvs.getContext('2d');
+      if (!ctx) return;
+
+      let obstacleCount = 0;
+      for (let y = 0; y < 16; y++) {
+        for (let x = 0; x < 16; x++) {
+          const bit = getWfcPixel(x, y);
+          if (bit === 1) {
+            obstacleCount++;
+            ctx.fillStyle = '#94a3b8'; // Shelf obstacle
+          } else {
+            ctx.fillStyle = '#0f172a'; // Walkable aisle
+          }
+          ctx.fillRect(x, y, 1, 1);
+        }
+      }
+
+      const pct = ((obstacleCount / 256) * 100).toFixed(1);
+      const badge = document.getElementById('wfc-density-badge');
+      if (badge) badge.innerText = `Shelf Density: ${pct}% (${obstacleCount}/256)`;
+    }
+
+    function initWfcCanvasEvents() {
+      const cvs = document.getElementById('wfc-canvas');
+      if (!cvs || cvs._eventsInitialized) return;
+      cvs._eventsInitialized = true;
+
+      function handlePaint(e) {
+        const rect = cvs.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        const x = Math.floor(((clientX - rect.left) / rect.width) * 16);
+        const y = Math.floor(((clientY - rect.top) / rect.height) * 16);
+        if (x >= 0 && x < 16 && y >= 0 && y < 16) {
+          setWfcPixel(x, y, wfcDrawBit);
+          document.getElementById('cfg-wfc-preset').value = '5';
+          document.getElementById('cfg-wfc-val').innerText = 'Custom';
+          drawWfcCanvas();
+        }
+      }
+
+      cvs.addEventListener('mousedown', (e) => {
+        const rect = cvs.getBoundingClientRect();
+        const x = Math.floor(((e.clientX - rect.left) / rect.width) * 16);
+        const y = Math.floor(((e.clientY - rect.top) / rect.height) * 16);
+        const currentBit = getWfcPixel(x, y);
+        wfcDrawBit = currentBit === 1 ? 0 : 1;
+        isWfcDrawing = true;
+        handlePaint(e);
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (!isWfcDrawing) return;
+        handlePaint(e);
+      });
+
+      window.addEventListener('mouseup', () => {
+        isWfcDrawing = false;
+      });
+
+      cvs.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        const rect = cvs.getBoundingClientRect();
+        const x = Math.floor(((e.touches[0].clientX - rect.left) / rect.width) * 16);
+        const y = Math.floor(((e.touches[0].clientY - rect.top) / rect.height) * 16);
+        wfcDrawBit = getWfcPixel(x, y) === 1 ? 0 : 1;
+        isWfcDrawing = true;
+        handlePaint(e);
+      }, { passive: false });
+
+      cvs.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        if (!isWfcDrawing) return;
+        handlePaint(e);
+      }, { passive: false });
+
+      window.addEventListener('touchend', () => {
+        isWfcDrawing = false;
+      });
+    }
+
+    function resetWfcToPreset() {
+      const val = parseInt(document.getElementById('cfg-wfc-preset').value, 10);
+      const idx = (val >= 0 && val < WFC_PRESETS.length) ? val : 0;
+      wfcBytes.set(WFC_PRESETS[idx]);
+      document.getElementById('cfg-wfc-preset').value = idx;
+      onWfcPresetSelectChange();
+    }
+
+    function invertWfcCanvas() {
+      for (let i = 0; i < 32; i++) {
+        wfcBytes[i] = ~wfcBytes[i] & 0xff;
+      }
+      document.getElementById('cfg-wfc-preset').value = '5';
+      document.getElementById('cfg-wfc-val').innerText = 'Custom';
+      drawWfcCanvas();
+    }
+
+    function clearWfcCanvas() {
+      wfcBytes.fill(0);
+      document.getElementById('cfg-wfc-preset').value = '5';
+      document.getElementById('cfg-wfc-val').innerText = 'Custom';
+      drawWfcCanvas();
+    }
+
+    function stripeWfcCanvas() {
+      wfcBytes.fill(0);
+      for (let y = 2; y < 14; y += 3) {
+        for (let x = 2; x < 14; x++) {
+          setWfcPixel(x, y, 1);
+        }
+      }
+      document.getElementById('cfg-wfc-preset').value = '5';
+      document.getElementById('cfg-wfc-val').innerText = 'Custom';
+      drawWfcCanvas();
+    }
+
+    function openConfigModal(mode = 'host') {
+      modalMode = mode;
+      const title = document.getElementById('modal-title');
+      const submit = document.getElementById('modal-submit-btn');
+      if (mode === 'host') {
+        title.innerText = '⚙️ Host Room Configuration';
+        submit.innerText = '🚀 Launch Hosted Room';
+      } else {
+        title.innerText = '⚙️ Solo Match Settings';
+        submit.innerText = '🕹️ Start Solo Practice';
+      }
+      document.getElementById('config-modal').classList.add('show');
+      initWfcCanvasEvents();
+      drawWfcCanvas();
+      updateSliderLabels();
+    }
+
+    function closeConfigModal() {
+      document.getElementById('config-modal').classList.remove('show');
+    }
+
+    function getRoomConfig() {
+      const hex = Array.from(wfcBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+      return {
+        mallWidth: parseInt(document.getElementById('cfg-mall-size').value, 10),
+        mallHeight: parseInt(document.getElementById('cfg-mall-size').value, 10),
+        wfcPreset: parseInt(document.getElementById('cfg-wfc-preset').value, 10),
+        wfcCustomHex: hex,
+        shoppingListCount: parseInt(document.getElementById('cfg-shopping-count').value, 10),
+        itemVariety: parseInt(document.getElementById('cfg-item-variety').value, 10),
+        pushForce: parseFloat(document.getElementById('cfg-push-force').value),
+        rollFriction: parseFloat(document.getElementById('cfg-roll-friction').value),
+        angularFriction: parseFloat(document.getElementById('cfg-angular-friction').value),
+        lateralGrip: parseFloat(document.getElementById('cfg-lateral-grip').value),
+        cartMass: parseFloat(document.getElementById('cfg-cart-mass').value),
+        wallRestitution: parseFloat(document.getElementById('cfg-wall-restitution').value),
+        theftMode: parseInt(document.getElementById('cfg-theft-mode').value, 10),
+        floorDropCount: parseInt(document.getElementById('cfg-floor-drops').value, 10),
+        crashImpulseMult: parseFloat(document.getElementById('cfg-crash-mult').value),
+        minCrashSpeed: parseFloat(document.getElementById('cfg-min-speed').value),
+        floorTheme: parseInt(document.getElementById('cfg-floor-theme').value, 10),
+      };
+    }
+
+    function applyAndLaunch() {
+      const cfg = getRoomConfig();
+      if (isWasmReady) {
+        try {
+          Module.ccall('web_set_room_config_json', null, ['string'], [JSON.stringify(cfg)]);
+        } catch(e) {
+          console.error('[CONFIG] Failed to pass config to Wasm:', e);
+        }
+      }
+      closeConfigModal();
+      if (modalMode === 'host') {
+        const code = (document.getElementById('room-input').value || '').trim().toUpperCase();
+        sendOrWait({ type: 'create_room', room: code, config: cfg });
+      } else {
+        startSingleplayer();
+      }
+    }
 
     // Toast helper
     function showToast(msg) {
@@ -634,7 +1379,23 @@
               }
             } catch(e) {}
           } else if (event.data instanceof ArrayBuffer) {
-            window._globus_net.queue.push(new Uint8Array(event.data));
+            const u8 = new Uint8Array(event.data);
+            if (u8.length > 0 && u8[0] === 4) { // PKT_CART_STATE
+              const q = window._globus_net.queue;
+              if (q.length > 3) {
+                let lastCart = -1;
+                for (let i = q.length - 1; i >= 0; i--) {
+                  if (q[i][0] === 4) {
+                    lastCart = i;
+                    break;
+                  }
+                }
+                if (lastCart !== -1) {
+                  window._globus_net.queue = q.filter((p, idx) => p[0] !== 4 || idx === lastCart);
+                }
+              }
+            }
+            window._globus_net.queue.push(u8);
           }
         };
 
@@ -679,9 +1440,29 @@
       rooms.forEach(r => {
         const item = document.createElement('div');
         item.className = 'room-item';
+        let tagsHtml = '';
+        if (r.config) {
+          const c = r.config;
+          const sz = `${c.mallWidth || 24}×${c.mallHeight || 24}`;
+          const cnt = `${c.shoppingListCount || 5} Items`;
+          let styleTag = '🛒 Standard';
+          if (c.lateralGrip && c.lateralGrip <= 0.45) styleTag = '🏎️ Drift';
+          else if (c.floorDropCount === 3) styleTag = '💥 Demolition';
+          else if (c.mallWidth === 18 && c.shoppingListCount === 3) styleTag = '⚡ Sprint';
+          else if (c.mallWidth >= 32) styleTag = '🏬 Mega';
+
+          tagsHtml = `<div style="display: flex; gap: 4px; margin-top: 3px; font-size: 0.72rem; color: #94a3b8;">
+            <span style="background: #1e293b; padding: 1px 6px; border-radius: 4px; border: 1px solid #334155;">${sz}</span>
+            <span style="background: #1e293b; padding: 1px 6px; border-radius: 4px; border: 1px solid #334155;">${cnt}</span>
+            <span style="background: #1e293b; padding: 1px 6px; border-radius: 4px; border: 1px solid #334155; color: #60a5fa;">${styleTag}</span>
+          </div>`;
+        }
         item.innerHTML = `
-          <div><span class="room-badge">ROOM ${r.id}</span> <span style="color: #64748b; font-size: 0.75rem;">(1/2 players)</span></div>
-          <button class="btn btn-primary" style="padding: 4px 10px; font-size: 0.8rem;" onclick="joinRoom('${r.id}')">Join</button>
+          <div>
+            <div><span class="room-badge">ROOM ${r.id}</span> <span style="color: #64748b; font-size: 0.75rem;">(1/2 players)</span></div>
+            ${tagsHtml}
+          </div>
+          <button class="btn btn-primary" style="padding: 5px 12px; font-size: 0.8rem;" onclick="joinRoom('${r.id}')">Join</button>
         `;
         listEl.appendChild(item);
       });
@@ -726,7 +1507,8 @@
     function createRoom() {
       if (!isWasmReady) return;
       const code = (document.getElementById('room-input').value || '').trim().toUpperCase();
-      sendOrWait({ type: 'create_room', room: code });
+      const cfg = getRoomConfig();
+      sendOrWait({ type: 'create_room', room: code, config: cfg });
     }
 
     function joinRoom(roomId) {
@@ -911,6 +1693,15 @@
 
     document.getElementById('canvas').addEventListener('dblclick', () => {
       toggleFullscreen();
+    });
+
+    // When returning to tab from background, resync positions immediately
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && isWasmReady) {
+        try {
+          Module.ccall('web_tab_resumed', null, [], []);
+        } catch (e) {}
+      }
     });
 
     // Emscripten Configuration

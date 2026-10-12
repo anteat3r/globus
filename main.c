@@ -35,6 +35,9 @@ static Vector2 remote_target_pos;
 static Vector2 remote_target_vel;
 static float remote_target_rot = 0.0f;
 static float remote_target_ang_vel = 0.0f;
+static float remote_last_packet_time = 0.0f;
+static float last_cart_state_send_time = 0.0f;
+static int last_sent_pick_side = -1;
 
 static Camera2D cam;
 static bool rot_follow = false;
@@ -52,6 +55,78 @@ static float race_start_time = 0.0f;
 static bool world_initialized = false;
 static uint32_t net_seed = 0;
 static uint8_t host_grid_mask[MALL_GRID_MASK_SIZE] = {0};
+RoomConfig g_config;
+#undef CART_PUSH_FORCE
+#define CART_PUSH_FORCE ((g_config.push_force > 0.0f) ? g_config.push_force : 45.0f)
+
+static int json_find_int(const char *json, const char *key, int default_val) {
+  char search[64];
+  snprintf(search, sizeof(search), "\"%s\"", key);
+  const char *p = strstr(json, search);
+  if (!p) return default_val;
+  p += strlen(search);
+  while (*p && (*p == ' ' || *p == ':' || *p == '\t')) p++;
+  if (!*p) return default_val;
+  return atoi(p);
+}
+
+static float json_find_float(const char *json, const char *key, float default_val) {
+  char search[64];
+  snprintf(search, sizeof(search), "\"%s\"", key);
+  const char *p = strstr(json, search);
+  if (!p) return default_val;
+  p += strlen(search);
+  while (*p && (*p == ' ' || *p == ':' || *p == '\t')) p++;
+  if (!*p) return default_val;
+  return (float)atof(p);
+}
+
+static void json_find_hex(const char *json, const char *key, uint8_t *out_bytes, int max_bytes) {
+  char search[64];
+  snprintf(search, sizeof(search), "\"%s\"", key);
+  const char *p = strstr(json, search);
+  if (!p) return;
+  p += strlen(search);
+  while (*p && (*p == ' ' || *p == ':' || *p == '\t' || *p == '\"')) p++;
+  for (int i = 0; i < max_bytes && *p && *p != '\"'; i++) {
+    unsigned int byte_val = 0;
+    if (sscanf(p, "%2x", &byte_val) == 1) {
+      out_bytes[i] = (uint8_t)byte_val;
+      p += 2;
+    } else {
+      break;
+    }
+  }
+}
+
+__attribute__((unused))
+static void room_config_from_json(const char *json, RoomConfig *cfg) {
+  if (!json || !cfg) return;
+  cfg->mall_width = (uint8_t)json_find_int(json, "mallWidth", cfg->mall_width);
+  cfg->mall_height = (uint8_t)json_find_int(json, "mallHeight", cfg->mall_height);
+  cfg->wfc_preset = (uint8_t)json_find_int(json, "wfcPreset", cfg->wfc_preset);
+  json_find_hex(json, "wfcCustomHex", cfg->wfc_custom, sizeof(cfg->wfc_custom));
+  cfg->shopping_list_count = (uint8_t)json_find_int(json, "shoppingListCount", cfg->shopping_list_count);
+  cfg->item_variety = (uint8_t)json_find_int(json, "itemVariety", cfg->item_variety);
+  cfg->push_force = json_find_float(json, "pushForce", cfg->push_force);
+  cfg->roll_friction = json_find_float(json, "rollFriction", cfg->roll_friction);
+  cfg->angular_friction = json_find_float(json, "angularFriction", cfg->angular_friction);
+  cfg->lateral_grip = json_find_float(json, "lateralGrip", cfg->lateral_grip);
+  cfg->cart_mass = json_find_float(json, "cartMass", cfg->cart_mass);
+  cfg->wall_restitution = json_find_float(json, "wallRestitution", cfg->wall_restitution);
+  cfg->theft_mode = (uint8_t)json_find_int(json, "theftMode", cfg->theft_mode);
+  cfg->floor_drop_count = (uint8_t)json_find_int(json, "floorDropCount", cfg->floor_drop_count);
+  cfg->crash_impulse_mult = json_find_float(json, "crashImpulseMult", cfg->crash_impulse_mult);
+  cfg->min_crash_speed = json_find_float(json, "minCrashSpeed", cfg->min_crash_speed);
+  cfg->floor_theme = (uint8_t)json_find_int(json, "floorTheme", cfg->floor_theme);
+
+  if (cfg->mall_width < MALL_MIN_DIM) cfg->mall_width = MALL_MIN_DIM;
+  if (cfg->mall_width > MALL_MAX_WIDTH) cfg->mall_width = MALL_MAX_WIDTH;
+  if (cfg->mall_height < MALL_MIN_DIM) cfg->mall_height = MALL_MIN_DIM;
+  if (cfg->mall_height > MALL_MAX_HEIGHT) cfg->mall_height = MALL_MAX_HEIGHT;
+  if (cfg->shopping_list_count < 1) cfg->shopping_list_count = 1;
+  if (cfg->shopping_list_count > SHOPPING_LIST_MAX_LEN) cfg->shopping_list_count = SHOPPING_LIST_MAX_LEN;
+}
 
 static ShoppingList local_shopping_list = {0};
 static ShoppingList remote_shopping_list = {0};
@@ -213,7 +288,7 @@ static void init_game_world(uint32_t seed, const uint8_t *in_grid_mask) {
   walls = wallarr_new();
   posters = island_posterarr_new();
   shelves = island_shelfarr_new();
-  mall_generation("res/wfc.png", &walls, &items, &posters, &shelves, seed,
+  mall_generation(&g_config, &walls, &items, &posters, &shelves, seed,
                   in_grid_mask, host_grid_mask);
 
   printf("%d items loaded, %d shelves, %d posters generated (seed: %u)\n",
@@ -311,11 +386,15 @@ static void start_singleplayer(void) {
   g_net.mode = NET_MODE_SINGLE;
   has_remote_cart = false;
 
+  float cx = (float)((g_config.mall_width > 0 ? g_config.mall_width : 24) / 2);
+  float cy = (float)((g_config.mall_height > 0 ? g_config.mall_height : 24) / 2);
+  float density = 4.0f * ((g_config.cart_mass > 0.0f ? g_config.cart_mass : 35.0f) / 35.0f);
+
   main_cart =
-      cart_new_goofy(DARKBLUE, BLUE, BLACK, Vector2Zero(), 4,
+      cart_new_goofy(DARKBLUE, BLUE, BLACK, Vector2Zero(), density,
                      (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
                      (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
-  main_cart.pos = (Vector2){10.0f, 10.0f};
+  main_cart.pos = (Vector2){cx, cy};
   g_main_cart_init = true;
 
   init_game_world((uint32_t)time(NULL), NULL);
@@ -334,21 +413,31 @@ static void start_host(const char *room_code, const char *ws_url, int port) {
   net_init_host(port);
 #endif
 
+  float cx = (float)((g_config.mall_width > 0 ? g_config.mall_width : 24) / 2);
+  float cy = (float)((g_config.mall_height > 0 ? g_config.mall_height : 24) / 2);
+  float density = 4.0f * ((g_config.cart_mass > 0.0f ? g_config.cart_mass : 35.0f) / 35.0f);
+
   // Player 1 (Blue)
   main_cart =
-      cart_new_goofy(DARKBLUE, BLUE, BLACK, Vector2Zero(), 4,
+      cart_new_goofy(DARKBLUE, BLUE, BLACK, Vector2Zero(), density,
                      (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
                      (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
-  main_cart.pos = (Vector2){9.5f, 10.0f};
+  main_cart.pos = (Vector2){cx - 0.5f, cy};
   g_main_cart_init = true;
 
   // Player 2 (Red)
   remote_cart =
-      cart_new_goofy(MAROON, RED, DARKGRAY, Vector2Zero(), 4,
+      cart_new_goofy(MAROON, RED, DARKGRAY, Vector2Zero(), density,
                      (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
                      (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
-  remote_cart.pos = (Vector2){10.5f, 10.0f};
+  remote_cart.pos = (Vector2){cx + 0.5f, cy};
   remote_target_pos = remote_cart.pos;
+  remote_target_vel = Vector2Zero();
+  remote_target_rot = 0.0f;
+  remote_target_ang_vel = 0.0f;
+  remote_last_packet_time = (float)GetTime();
+  last_cart_state_send_time = 0.0f;
+  last_sent_pick_side = -1;
   g_remote_cart_init = true;
   has_remote_cart = false;
 
@@ -367,21 +456,31 @@ static void start_client(const char *join_ip_or_room, const char *ws_url, int po
   net_init_client(join_ip_or_room, port);
 #endif
 
+  float cx = (float)((g_config.mall_width > 0 ? g_config.mall_width : 24) / 2);
+  float cy = (float)((g_config.mall_height > 0 ? g_config.mall_height : 24) / 2);
+  float density = 4.0f * ((g_config.cart_mass > 0.0f ? g_config.cart_mass : 35.0f) / 35.0f);
+
   // Local player is Player 2 (Red)
   main_cart =
-      cart_new_goofy(MAROON, RED, DARKGRAY, Vector2Zero(), 4,
+      cart_new_goofy(MAROON, RED, DARKGRAY, Vector2Zero(), density,
                      (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
                      (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
-  main_cart.pos = (Vector2){10.5f, 10.0f};
+  main_cart.pos = (Vector2){cx + 0.5f, cy};
   g_main_cart_init = true;
 
   // Remote player is Player 1 (Blue)
   remote_cart =
-      cart_new_goofy(DARKBLUE, BLUE, BLACK, Vector2Zero(), 4,
+      cart_new_goofy(DARKBLUE, BLUE, BLACK, Vector2Zero(), density,
                      (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
                      (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
-  remote_cart.pos = (Vector2){9.5f, 10.0f};
+  remote_cart.pos = (Vector2){cx - 0.5f, cy};
   remote_target_pos = remote_cart.pos;
+  remote_target_vel = Vector2Zero();
+  remote_target_rot = 0.0f;
+  remote_target_ang_vel = 0.0f;
+  remote_last_packet_time = (float)GetTime();
+  last_cart_state_send_time = 0.0f;
+  last_sent_pick_side = -1;
   g_remote_cart_init = true;
   has_remote_cart = false;
 
@@ -450,29 +549,46 @@ void web_zoom_out(void) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+void web_set_room_config_json(const char *json_str) {
+  room_config_from_json(json_str, &g_config);
+}
+
+EMSCRIPTEN_KEEPALIVE
 void web_peer_joined(void) {
   if (g_net.mode == NET_MODE_HOST && world_initialized) {
-    net_send_init(net_seed, shopping_list, shopping_list_len, host_grid_mask);
+    net_send_init(net_seed, &g_config, shopping_list, shopping_list_len, host_grid_mask);
     g_net.state = NET_STATE_CONNECTING;
+  }
+}
+
+EMSCRIPTEN_KEEPALIVE
+void web_tab_resumed(void) {
+  if (has_remote_cart) {
+    remote_cart.pos = remote_target_pos;
+    remote_cart.rot = remote_target_rot;
+    remote_cart.vel = remote_target_vel;
+    remote_cart.ang_vel = remote_target_ang_vel;
   }
 }
 #endif
 
 static void restart_match(void) {
+  float cx = (float)((g_config.mall_width > 0 ? g_config.mall_width : 24) / 2);
+  float cy = (float)((g_config.mall_height > 0 ? g_config.mall_height : 24) / 2);
   if (g_net.mode == NET_MODE_SINGLE) {
     cleanup_game_world();
-    main_cart.pos = (Vector2){10.0f, 10.0f};
+    main_cart.pos = (Vector2){cx, cy};
     main_cart.vel = Vector2Zero();
     main_cart.rot = 0.0f;
     main_cart.ang_vel = 0.0f;
     init_game_world((uint32_t)time(NULL), NULL);
   } else if (g_net.mode == NET_MODE_HOST) {
     cleanup_game_world();
-    main_cart.pos = (Vector2){9.5f, 10.0f};
+    main_cart.pos = (Vector2){cx - 0.5f, cy};
     main_cart.vel = Vector2Zero();
     main_cart.rot = 0.0f;
     main_cart.ang_vel = 0.0f;
-    remote_cart.pos = (Vector2){10.5f, 10.0f};
+    remote_cart.pos = (Vector2){cx + 0.5f, cy};
     remote_cart.vel = Vector2Zero();
     remote_cart.rot = 0.0f;
     remote_cart.ang_vel = 0.0f;
@@ -480,12 +596,15 @@ static void restart_match(void) {
     remote_target_vel = Vector2Zero();
     remote_target_rot = 0.0f;
     remote_target_ang_vel = 0.0f;
+    remote_last_packet_time = (float)GetTime();
+    last_cart_state_send_time = 0.0f;
+    last_sent_pick_side = -1;
     remote_pick_side = -1;
 
     uint32_t new_seed = (uint32_t)time(NULL);
     init_game_world(new_seed, NULL);
     if (g_net.state == NET_STATE_CONNECTED) {
-      net_send_init(new_seed, shopping_list, shopping_list_len, host_grid_mask);
+      net_send_init(new_seed, &g_config, shopping_list, shopping_list_len, host_grid_mask);
     }
   } else if (g_net.mode == NET_MODE_CLIENT) {
     rematch_requested = true;
@@ -502,10 +621,11 @@ static void handle_host_cart_collision(float p1_speed, float p2_speed,
   last_collision_time = now;
 
   // Determine faster player: 1 = Host (Blue), 2 = Client (Red), 0 = Equal
+  float min_speed = (g_config.min_crash_speed > 0.0f) ? g_config.min_crash_speed : 0.02f;
   int faster_id = 0;
-  if (p1_speed > p2_speed + 0.02f) {
+  if (p1_speed > p2_speed + min_speed) {
     faster_id = 1;
-  } else if (p2_speed > p1_speed + 0.02f) {
+  } else if (p2_speed > p1_speed + min_speed) {
     faster_id = 2;
   } else if (p1_speed > p2_speed) {
     faster_id = 1;
@@ -515,7 +635,7 @@ static void handle_host_cart_collision(float p1_speed, float p2_speed,
 
   int transferred_texture_id = -1;
 
-  if (faster_id != 0) {
+  if (faster_id != 0 && g_config.theft_mode == 1) {
     Cart *faster_cart = (faster_id == 1) ? &main_cart : &remote_cart;
     ShoppingList *faster_slist =
         (faster_id == 1) ? &local_shopping_list : &remote_shopping_list;
@@ -575,14 +695,17 @@ static void handle_host_cart_collision(float p1_speed, float p2_speed,
   }
 
   // Crash impact shockwave
+  float bump_mult = (g_config.crash_impulse_mult > 0.0f) ? g_config.crash_impulse_mult : 1.0f;
   Vector2 crash_pos =
       Vector2Scale(Vector2Add(main_cart.pos, remote_cart.pos), 0.5f);
-  spawn_shockwave(crash_pos, 1.3f, ORANGE);
+  spawn_shockwave(crash_pos, 1.3f * bump_mult, ORANGE);
 
-  // Both players drop one item on the floor
+  // Floor drop items based on room config
+  int max_drops = (g_config.floor_drop_count == 3) ? 999 : (int)g_config.floor_drop_count;
+
   int p1_drop_tex_id = -1;
   Vector2 p1_drop_pos = Vector2Zero();
-  if (main_cart.items.len > 0) {
+  for (int d = 0; d < max_drops && main_cart.items.len > 0; d++) {
     int drop_idx = main_cart.items.len - 1;
     Item p1_dropped;
     if (cart_remove_item(&main_cart, drop_idx, &p1_dropped)) {
@@ -604,7 +727,7 @@ static void handle_host_cart_collision(float p1_speed, float p2_speed,
 
   int p2_drop_tex_id = -1;
   Vector2 p2_drop_pos = Vector2Zero();
-  if (remote_cart.items.len > 0) {
+  for (int d = 0; d < max_drops && remote_cart.items.len > 0; d++) {
     int drop_idx = remote_cart.items.len - 1;
     Item p2_dropped;
     if (cart_remove_item(&remote_cart, drop_idx, &p2_dropped)) {
@@ -629,9 +752,9 @@ static void handle_host_cart_collision(float p1_speed, float p2_speed,
   if (g_net.mode == NET_MODE_HOST && g_net.state == NET_STATE_CONNECTED) {
     PktCollisionEvent pkt = {
         .header = {.type = PKT_COLLISION_EVENT},
-        .impulse_x = bump_impulse.x,
-        .impulse_y = bump_impulse.y,
-        .ang_impulse = bump_ang,
+        .impulse_x = bump_impulse.x * bump_mult,
+        .impulse_y = bump_impulse.y * bump_mult,
+        .ang_impulse = bump_ang * bump_mult,
         .faster_player_id = (uint8_t)faster_id,
         .transferred_texture_id = transferred_texture_id,
         .p1_dropped_texture_id = p1_drop_tex_id,
@@ -810,6 +933,7 @@ static void DrawTickFrame(void) {
   }
 
   float delta = GetFrameTime();
+  if (delta > 0.1f) delta = 0.1f;
   float now = (float)GetTime();
 
   // Process networking
@@ -838,7 +962,7 @@ static void DrawTickFrame(void) {
           if (winner != 0) {
             restart_match();
           } else {
-            net_send_init(net_seed, shopping_list, shopping_list_len,
+            net_send_init(net_seed, &g_config, shopping_list, shopping_list_len,
                           host_grid_mask);
           }
           g_net.state = NET_STATE_CONNECTING;
@@ -847,14 +971,17 @@ static void DrawTickFrame(void) {
 
       case PKT_INIT:
         if (g_net.mode == NET_MODE_CLIENT) {
+          g_config = pkt.init.config;
           cleanup_game_world();
           init_game_world(pkt.init.seed, pkt.init.grid_mask);
           apply_remote_shopping_list(&pkt.init);
-          main_cart.pos = (Vector2){10.5f, 10.0f};
+          float cx = (float)((g_config.mall_width > 0 ? g_config.mall_width : 24) / 2);
+          float cy = (float)((g_config.mall_height > 0 ? g_config.mall_height : 24) / 2);
+          main_cart.pos = (Vector2){cx + 0.5f, cy};
           main_cart.vel = Vector2Zero();
           main_cart.rot = 0.0f;
           main_cart.ang_vel = 0.0f;
-          remote_cart.pos = (Vector2){9.5f, 10.0f};
+          remote_cart.pos = (Vector2){cx - 0.5f, cy};
           remote_cart.vel = Vector2Zero();
           remote_cart.rot = 0.0f;
           remote_cart.ang_vel = 0.0f;
@@ -862,6 +989,9 @@ static void DrawTickFrame(void) {
           remote_target_vel = Vector2Zero();
           remote_target_rot = 0.0f;
           remote_target_ang_vel = 0.0f;
+          remote_last_packet_time = now;
+          last_cart_state_send_time = 0.0f;
+          last_sent_pick_side = -1;
           remote_pick_side = -1;
           has_remote_cart = true;
           net_send_ready();
@@ -885,6 +1015,7 @@ static void DrawTickFrame(void) {
           remote_pick_side = pkt.cart.pick_side;
           remote_pick_pos = (Vector2){pkt.cart.pick_pos_x, pkt.cart.pick_pos_y};
           remote_cart.mass = pkt.cart.mass;
+          remote_last_packet_time = now;
         }
         break;
 
@@ -1089,9 +1220,34 @@ static void DrawTickFrame(void) {
 
   // Remote cart smooth interpolation and cart-on-cart collision
   if (has_remote_cart) {
-    remote_cart.pos = Vector2Lerp(remote_cart.pos, remote_target_pos, 0.40f);
+    float time_since_packet = now - remote_last_packet_time;
+    // Dead reckoning: extrapolate remote cart position forward between 30Hz packets or brief network hiccups
+    if (time_since_packet > 0.016f && time_since_packet < 0.75f) {
+      remote_target_pos =
+          Vector2Add(remote_target_pos, Vector2Scale(remote_target_vel, delta));
+      remote_target_rot += remote_target_ang_vel * delta;
+      // If no packet for > 0.25s, gently decay extrapolated velocity to avoid sliding through walls indefinitely
+      if (time_since_packet > 0.25f) {
+        float damp = fmaxf(0.0f, 1.0f - 3.5f * delta);
+        remote_target_vel = Vector2Scale(remote_target_vel, damp);
+        remote_target_ang_vel *= damp;
+      }
+    }
+
+    // Distance check: snap if desync or teleport distance is too large (> 4.5m)
+    float dist = Vector2Distance(remote_cart.pos, remote_target_pos);
+    if (dist > 4.5f) {
+      remote_cart.pos = remote_target_pos;
+      remote_cart.rot = remote_target_rot;
+    } else {
+      // Frame-rate independent exponential smoothing
+      float blend = 1.0f - expf(-18.0f * delta);
+      if (blend > 0.65f)
+        blend = 0.65f;
+      remote_cart.pos = Vector2Lerp(remote_cart.pos, remote_target_pos, blend);
+      remote_cart.rot = LerpAngle(remote_cart.rot, remote_target_rot, blend);
+    }
     remote_cart.vel = remote_target_vel;
-    remote_cart.rot = LerpAngle(remote_cart.rot, remote_target_rot, 0.40f);
     remote_cart.ang_vel = remote_target_ang_vel;
 
     // Cart-on-cart bumping physics
@@ -1184,15 +1340,19 @@ static void DrawTickFrame(void) {
     restart_match();
   }
 
-  // Stream local cart state to network
+  // Stream local cart state to network (~30 Hz to prevent TCP buffer bloat over WebSockets)
   if (g_net.state == NET_STATE_CONNECTED && world_initialized) {
-    Vector2 pick_target =
-        (pick_side != -1 && pick_item_idx >= 0 && pick_item_idx < items.len)
-            ? items.items[pick_item_idx].pos
-            : Vector2Zero();
-    net_send_cart_state(main_cart.pos, main_cart.vel, main_cart.rot,
-                        main_cart.ang_vel, pick_side, pick_target,
-                        main_cart.mass);
+    if (now - last_cart_state_send_time >= 0.033f || pick_side != last_sent_pick_side) {
+      last_cart_state_send_time = now;
+      last_sent_pick_side = pick_side;
+      Vector2 pick_target =
+          (pick_side != -1 && pick_item_idx >= 0 && pick_item_idx < items.len)
+              ? items.items[pick_item_idx].pos
+              : Vector2Zero();
+      net_send_cart_state(main_cart.pos, main_cart.vel, main_cart.rot,
+                          main_cart.ang_vel, pick_side, pick_target,
+                          main_cart.mass);
+    }
   }
 
   float wheel = GetMouseWheelMove();
@@ -1234,18 +1394,41 @@ static void DrawTickFrame(void) {
   }
 
   BeginDrawing();
-  ClearBackground(RAYWHITE);
+  Color bg_clear = RAYWHITE;
+  Color tile_col = LIGHTGRAY;
+  switch (g_config.floor_theme) {
+    case 1: // Warm Terrazzo
+      bg_clear = (Color){245, 238, 226, 255};
+      tile_col = (Color){232, 220, 202, 255};
+      break;
+    case 2: // Midnight Cyber
+      bg_clear = (Color){22, 24, 34, 255};
+      tile_col = (Color){34, 38, 52, 255};
+      break;
+    case 3: // Fresh Mint
+      bg_clear = (Color){232, 246, 238, 255};
+      tile_col = (Color){212, 236, 222, 255};
+      break;
+    default: // Classic Supermarket
+      bg_clear = RAYWHITE;
+      tile_col = LIGHTGRAY;
+      break;
+  }
+  ClearBackground(bg_clear);
   BeginMode2D(cam);
 
+  int mw = (g_config.mall_width >= MALL_MIN_DIM) ? g_config.mall_width : MALL_WIDTH;
+  int mh = (g_config.mall_height >= MALL_MIN_DIM) ? g_config.mall_height : MALL_HEIGHT;
+
   // Background checkerboard
-  for (int i = -10; i < MALL_WIDTH + 10; i++) {
-    for (int j = -10; j < MALL_HEIGHT + 10; j++) {
+  for (int i = -10; i < mw + 10; i++) {
+    for (int j = -10; j < mh + 10; j++) {
       int posx = i;
       int posy = j;
       if ((posx + posy) % 2 == 0)
         continue;
       DrawRectangleV((Vector2){(float)posx, (float)posy}, (Vector2){1.0f, 1.0f},
-                     LIGHTGRAY);
+                     tile_col);
     }
   }
 
@@ -1677,6 +1860,7 @@ static void DrawTickFrame(void) {
 }
 
 int main(int argc, char **argv) {
+  g_config = room_config_default();
 #if defined(__EMSCRIPTEN__)
   (void)argc;
   (void)argv;
@@ -1717,6 +1901,82 @@ int main(int argc, char **argv) {
       if (i + 1 < argc && argv[i + 1][0] != '-') {
         port = atoi(argv[++i]);
       }
+    } else if (strcmp(argv[i], "--size") == 0) {
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        int sz = atoi(argv[++i]);
+        if (sz < MALL_MIN_DIM) sz = MALL_MIN_DIM;
+        if (sz > MALL_MAX_WIDTH) sz = MALL_MAX_WIDTH;
+        g_config.mall_width = (uint8_t)sz;
+        g_config.mall_height = (uint8_t)sz;
+      }
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        int sz_h = atoi(argv[++i]);
+        if (sz_h < MALL_MIN_DIM) sz_h = MALL_MIN_DIM;
+        if (sz_h > MALL_MAX_HEIGHT) sz_h = MALL_MAX_HEIGHT;
+        g_config.mall_height = (uint8_t)sz_h;
+      }
+    } else if (strcmp(argv[i], "--items") == 0) {
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        int cnt = atoi(argv[++i]);
+        if (cnt < 1) cnt = 1;
+        if (cnt > SHOPPING_LIST_MAX_LEN) cnt = SHOPPING_LIST_MAX_LEN;
+        g_config.shopping_list_count = (uint8_t)cnt;
+      }
+    } else if (strcmp(argv[i], "--wfc") == 0) {
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        const char *w_arg = argv[++i];
+        if (strcmp(w_arg, "classic") == 0 || strcmp(w_arg, "0") == 0) g_config.wfc_preset = WFC_PRESET_ID_CLASSIC;
+        else if (strcmp(w_arg, "aisles") == 0 || strcmp(w_arg, "1") == 0) g_config.wfc_preset = WFC_PRESET_ID_AISLES;
+        else if (strcmp(w_arg, "warehouse") == 0 || strcmp(w_arg, "2") == 0) g_config.wfc_preset = WFC_PRESET_ID_WAREHOUSE;
+        else if (strcmp(w_arg, "maze") == 0 || strcmp(w_arg, "3") == 0) g_config.wfc_preset = WFC_PRESET_ID_MAZE;
+        else if (strcmp(w_arg, "plaza") == 0 || strcmp(w_arg, "4") == 0) g_config.wfc_preset = WFC_PRESET_ID_PLAZA;
+        else g_config.wfc_preset = (uint8_t)atoi(w_arg);
+      }
+    } else if (strcmp(argv[i], "--theme") == 0) {
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        g_config.floor_theme = (uint8_t)atoi(argv[++i]);
+      }
+    } else if (strcmp(argv[i], "--force") == 0) {
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        g_config.push_force = (float)atof(argv[++i]);
+      }
+    } else if (strcmp(argv[i], "--friction") == 0) {
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        g_config.roll_friction = (float)atof(argv[++i]);
+      }
+    } else if (strcmp(argv[i], "--grip") == 0) {
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        g_config.lateral_grip = (float)atof(argv[++i]);
+      }
+    } else if (strcmp(argv[i], "--mass") == 0) {
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        g_config.cart_mass = (float)atof(argv[++i]);
+      }
+    } else if (strcmp(argv[i], "--drift") == 0) {
+      g_config.push_force = 62.0f;
+      g_config.lateral_grip = 0.35f;
+      g_config.roll_friction = 0.025f;
+      g_config.angular_friction = 1.2f;
+    } else if (strcmp(argv[i], "--demolition") == 0) {
+      g_config.cart_mass = 65.0f;
+      g_config.crash_impulse_mult = 2.0f;
+      g_config.floor_drop_count = 3;
+      g_config.wall_restitution = 0.65f;
+    } else if (strcmp(argv[i], "--sprint") == 0) {
+      g_config.mall_width = 18;
+      g_config.mall_height = 18;
+      g_config.shopping_list_count = 3;
+      g_config.push_force = 55.0f;
+    } else if (strcmp(argv[i], "--no-theft") == 0) {
+      g_config.theft_mode = 0;
+    } else if (strcmp(argv[i], "--drops") == 0) {
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        g_config.floor_drop_count = (uint8_t)atoi(argv[++i]);
+      }
+    } else if (strcmp(argv[i], "--restitution") == 0) {
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        g_config.wall_restitution = (float)atof(argv[++i]);
+      }
     } else if (strcmp(argv[i], "--screenshot") == 0) {
       if (i + 1 < argc && argv[i + 1][0] != '-') {
         screenshot_path = argv[++i];
@@ -1730,8 +1990,22 @@ int main(int argc, char **argv) {
           "  ./main --host [port]        Host multiplayer game (default: %d)\n",
           DEFAULT_NET_PORT);
       printf("  ./main --join <IP> [port]   Join game over Tailscale / LAN\n");
-      printf("  ./main --screenshot <file>  Save screenshot after a few frames "
-             "and exit\n");
+      printf("Room Customization Options (for host & singleplayer):\n");
+      printf("  --size <W> [H]              Supermarket grid dimensions 16..36 (default: 24)\n");
+      printf("  --items <N>                 Shopping list count 1..16 (default: 5)\n");
+      printf("  --wfc <preset>              WFC preset: classic, aisles, warehouse, maze, plaza (0..4)\n");
+      printf("  --theme <0..3>              Floor theme: 0=Classic, 1=Terrazzo, 2=Midnight, 3=Mint\n");
+      printf("  --force <float>             Cart push force (default: 45.0)\n");
+      printf("  --friction <float>          Roll friction (default: 0.05)\n");
+      printf("  --grip <float>              Wheel lateral grip (default: 1.0, lower=driftier)\n");
+      printf("  --mass <float>              Cart mass in kg (default: 35.0)\n");
+      printf("  --drift                     Preset: Tokyo Drift handling\n");
+      printf("  --demolition                Preset: Heavy carts, max bump impulse, drop all\n");
+      printf("  --sprint                    Preset: Compact 18x18 mall, 3 items, fast pace\n");
+      printf("  --no-theft                  Disable item stealing on collision\n");
+      printf("  --drops <0..3>              Floor drop items per crash (0=none, 1=one, 2=two, 3=all)\n");
+      printf("  --restitution <float>       Wall bounciness (default: 0.20)\n");
+      printf("  --screenshot <file>         Save screenshot after a few frames and exit\n");
       return 0;
     }
   }

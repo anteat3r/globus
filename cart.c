@@ -1,4 +1,5 @@
 #include "cart.h"
+#include "mall.h"
 #include <math.h>
 #include <stdlib.h>
 
@@ -172,7 +173,8 @@ void cart_tick(Cart *cart, WallArr walls, int num_walls, float delta) {
   float v_fwd = Vector2DotProduct(cart->vel, u_fwd);
 
   float g = 9.81f;
-  float f_roll_mag = 0.050f * cart->mass * g;
+  float roll_f = (g_config.roll_friction > 0.0f) ? g_config.roll_friction : 0.050f;
+  float f_roll_mag = roll_f * cart->mass * g;
   float f_roll = 0.0f;
   if (fabsf(v_fwd) > 0.02f) {
     float sign = (v_fwd > 0.0f) ? 1.0f : -1.0f;
@@ -194,12 +196,13 @@ void cart_tick(Cart *cart, WallArr walls, int num_walls, float delta) {
   float v_lat_f = Vector2DotProduct(v_f, u_right);
   float v_lat_r = Vector2DotProduct(v_r, u_right);
 
-  float grip_rear_coeff = 28.0f * cart->mass;
-  float grip_front_coeff = 9.0f * cart->mass;
+  float grip_mult = (g_config.lateral_grip > 0.0f) ? g_config.lateral_grip : 1.0f;
+  float grip_rear_coeff = 28.0f * cart->mass * grip_mult;
+  float grip_front_coeff = 9.0f * cart->mass * grip_mult;
 
   float normal_load = 0.5f * cart->mass * g;
-  float max_friction_rear = 0.85f * normal_load;
-  float max_friction_front = 0.40f * normal_load;
+  float max_friction_rear = 0.85f * normal_load * grip_mult;
+  float max_friction_front = 0.40f * normal_load * grip_mult;
 
   float f_lat_r = -grip_rear_coeff * v_lat_r;
   if (fabsf(f_lat_r) > max_friction_rear) {
@@ -217,8 +220,9 @@ void cart_tick(Cart *cart, WallArr walls, int num_walls, float delta) {
   float torque_wheels = (r_r.x * F_lat_r_vec.y - r_r.y * F_lat_r_vec.x) +
                         (r_f.x * F_lat_f_vec.y - r_f.y * F_lat_f_vec.x);
 
+  float ang_fric = (g_config.angular_friction > 0.0f) ? g_config.angular_friction : 2.2f;
   float torque_damping =
-      -2.2f * cart->ang_vel * (cart->mom_inertia / cart->base_mom_inertia);
+      -ang_fric * cart->ang_vel * (cart->mom_inertia / cart->base_mom_inertia);
 
   Vector2 f_total = Vector2Add(Vector2Scale(u_fwd, f_roll),
                                Vector2Add(F_lat_r_vec, F_lat_f_vec));
@@ -282,7 +286,7 @@ void cart_tick(Cart *cart, WallArr walls, int num_walls, float delta) {
           float Kn = inv_mass + inv_inertia_n;
 
           if (Kn > EPSILON) {
-            float restitution = RESTITUTION;
+            float restitution = (g_config.wall_restitution >= 0.0f) ? g_config.wall_restitution : RESTITUTION;
             float jn = -(1.0f + restitution) * vn / Kn;
             if (jn < 0.0f)
               jn = 0.0f;
@@ -392,7 +396,8 @@ bool cart_collide_cart(Cart *c1, Cart *c2, Vector2 *out_bump_impulse,
   float restitution = 1.20f;
   float impact_speed = -vn;
   float boost = (impact_speed > 0.20f) ? 1.4f : 1.0f;
-  float jn = -(1.0f + restitution) * vn / (Kn > EPSILON ? Kn : total_inv_m) * boost;
+  float crash_mult = (g_config.crash_impulse_mult > 0.0f) ? g_config.crash_impulse_mult : 1.0f;
+  float jn = -(1.0f + restitution) * vn / (Kn > EPSILON ? Kn : total_inv_m) * boost * crash_mult;
 
   Vector2 impulse = Vector2Scale(n, jn);
 

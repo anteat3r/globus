@@ -107,7 +107,23 @@ EM_JS(int, em_ws_connect, (const char *url_ptr, const char *room_ptr, int is_hos
           }
         } catch(e) {}
       } else if (event.data instanceof ArrayBuffer) {
-        window._globus_net.queue.push(new Uint8Array(event.data));
+        const u8 = new Uint8Array(event.data);
+        if (u8.length > 0 && u8[0] === 4) { // PKT_CART_STATE
+          const q = window._globus_net.queue;
+          if (q.length > 3) {
+            let lastCart = -1;
+            for (let i = q.length - 1; i >= 0; i--) {
+              if (q[i][0] === 4) {
+                lastCart = i;
+                break;
+              }
+            }
+            if (lastCart !== -1) {
+              window._globus_net.queue = q.filter((p, idx) => p[0] !== 4 || idx === lastCart);
+            }
+          }
+        }
+        window._globus_net.queue.push(u8);
       }
     };
 
@@ -381,12 +397,17 @@ void net_send_hello(void) {
   net_send(&p, sizeof(p));
 }
 
-void net_send_init(uint32_t seed, const int *slist, int slist_len,
-                   const uint8_t *grid_mask) {
+void net_send_init(uint32_t seed, const RoomConfig *config, const int *slist,
+                   int slist_len, const uint8_t *grid_mask) {
   PktInit p;
   memset(&p, 0, sizeof(p));
   p.header.type = PKT_INIT;
   p.seed = seed;
+  if (config) {
+    p.config = *config;
+  } else {
+    p.config = room_config_default();
+  }
   p.shopping_list_count = (uint8_t)slist_len;
   for (int i = 0; i < slist_len && i < SHOPPING_LIST_MAX_LEN; i++) {
     p.shopping_list[i] = (int16_t)slist[i];
