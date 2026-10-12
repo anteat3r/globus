@@ -1,15 +1,7 @@
 #include "net.h"
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
 
 NetContext g_net = {
     .mode = NET_MODE_SINGLE,
@@ -27,6 +19,205 @@ NetContext g_net = {
     .recv_seq = 0,
 };
 
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+
+EM_JS(int, em_ws_connect, (const char *url_ptr, const char *room_ptr, int is_host), {
+  let url = (url_ptr && UTF8ToString(url_ptr)) || "";
+  const room = (room_ptr && UTF8ToString(room_ptr)) || "";
+
+  if (!url || url.length === 0) {
+    const loc = window.location;
+    const proto = (loc.protocol === 'https:') ? 'wss:' : 'ws:';
+    url = proto + '//' + loc.host + '/ws';
+  }
+
+  if (!window._globus_net) {
+    window._globus_net = {
+      ws: null,
+      queue: [],
+      connected: false,
+      connecting: false,
+      role: null,
+      room: null,
+      serverRoom: null,
+    };
+  }
+
+  window._globus_net.role = is_host ? 'host' : 'client';
+  window._globus_net.room = room;
+
+  // Reuse existing open WebSocket if available!
+  if (window._globus_net.ws && window._globus_net.ws.readyState === WebSocket.OPEN) {
+    console.log('[WS] Reusing open WebSocket for room:', room);
+    window._globus_net.connected = true;
+    if (window._globus_net.serverRoom !== room && room && room.length > 0) {
+      window._globus_net.serverRoom = room;
+      const msg = {
+        type: is_host ? 'create_room' : 'join_room',
+        room: room
+      };
+      window._globus_net.ws.send(JSON.stringify(msg));
+    }
+    return 1;
+  }
+
+  if (window._globus_net.ws && window._globus_net.ws.readyState === WebSocket.CONNECTING) {
+    console.log('[WS] WebSocket is already connecting...');
+    return 1;
+  }
+
+  try {
+    const ws = new WebSocket(url);
+    ws.binaryType = 'arraybuffer';
+    window._globus_net.ws = ws;
+    window._globus_net.connecting = true;
+
+    ws.onopen = function() {
+      console.log('[WS] Connected to relay server:', url);
+      window._globus_net.connecting = false;
+      window._globus_net.connected = true;
+      if (window._globus_net.room && window._globus_net.room.length > 0) {
+        const msg = {
+          type: (window._globus_net.role === 'host') ? 'create_room' : 'join_room',
+          room: window._globus_net.room
+        };
+        ws.send(JSON.stringify(msg));
+      }
+      if (window.onNetStatus) window.onNetStatus('Connected to relay, room ' + window._globus_net.room);
+    };
+
+    ws.onmessage = function(event) {
+      if (typeof event.data === 'string') {
+        try {
+          const ctrl = JSON.parse(event.data);
+          console.log('[WS] Control message:', ctrl);
+          if (ctrl.type === 'peer_joined') {
+            if (window.onPeerJoined) window.onPeerJoined(ctrl);
+          } else if (ctrl.type === 'peer_left') {
+            if (window.onPeerLeft) window.onPeerLeft(ctrl);
+          } else if (ctrl.type === 'room_created') {
+            if (window.onRoomCreated) window.onRoomCreated(ctrl);
+          } else if (ctrl.type === 'room_joined') {
+            if (window.onRoomJoined) window.onRoomJoined(ctrl);
+          } else if (ctrl.type === 'room_list') {
+            if (window.onRoomList) window.onRoomList(ctrl.rooms);
+          } else if (ctrl.type === 'error') {
+            if (window.onNetError) window.onNetError(ctrl.message);
+          }
+        } catch(e) {}
+      } else if (event.data instanceof ArrayBuffer) {
+        window._globus_net.queue.push(new Uint8Array(event.data));
+      }
+    };
+
+    ws.onerror = function(err) {
+      console.error('[WS] Connection error:', err);
+      window._globus_net.connecting = false;
+      if (window.onNetError) window.onNetError('WebSocket connection error');
+    };
+
+    ws.onclose = function() {
+      console.log('[WS] Connection closed');
+      window._globus_net.connected = false;
+      window._globus_net.connecting = false;
+      if (window.onNetStatus) window.onNetStatus('Disconnected from relay');
+    };
+
+    return 1;
+  } catch(e) {
+    console.error('[WS] Exception connecting to WebSocket:', e);
+    window._globus_net.connecting = false;
+    return 0;
+  }
+});
+
+EM_JS(int, em_ws_send, (const uint8_t *data, int len), {
+  if (!window._globus_net || !window._globus_net.ws || window._globus_net.ws.readyState !== 1) {
+    return 0;
+  }
+  const slice = HEAPU8.subarray(data, data + len);
+  window._globus_net.ws.send(slice);
+  return 1;
+});
+
+EM_JS(int, em_ws_poll, (uint8_t *out_buf, int max_len), {
+  if (!window._globus_net || !window._globus_net.queue || window._globus_net.queue.length === 0) {
+    return 0;
+  }
+  const pkt = window._globus_net.queue.shift();
+  if (pkt.length > max_len) {
+    return 0;
+  }
+  HEAPU8.set(pkt, out_buf);
+  return pkt.length;
+});
+
+EM_JS(void, em_ws_close, (void), {
+  if (window._globus_net) {
+    window._globus_net.queue = [];
+    if (window._globus_net.ws && window._globus_net.ws.readyState === 1) {
+      try {
+        window._globus_net.ws.send(JSON.stringify({ type: 'leave_room' }));
+      } catch(e) {}
+    }
+    window._globus_net.room = null;
+    window._globus_net.role = null;
+  }
+});
+
+bool net_init_web(const char *ws_url, const char *room_code, NetMode mode) {
+  g_net.mode = mode;
+  g_net.state = NET_STATE_CONNECTING;
+  g_net.is_connected = false;
+  if (room_code) {
+    strncpy(g_net.remote_ip, room_code, sizeof(g_net.remote_ip) - 1);
+  } else {
+    strncpy(g_net.remote_ip, "LOBBY", sizeof(g_net.remote_ip) - 1);
+  }
+  int is_host = (mode == NET_MODE_HOST) ? 1 : 0;
+  return em_ws_connect(ws_url, room_code, is_host) == 1;
+}
+
+bool net_init_host(int port) {
+  (void)port;
+  return net_init_web(NULL, NULL, NET_MODE_HOST);
+}
+
+bool net_init_client(const char *host_ip, int port) {
+  (void)port;
+  return net_init_web(NULL, host_ip, NET_MODE_CLIENT);
+}
+
+void net_close(void) {
+  em_ws_close();
+  g_net.state = NET_STATE_DISCONNECTED;
+  g_net.is_connected = false;
+}
+
+bool net_send(const void *data, size_t size) {
+  return em_ws_send((const uint8_t *)data, (int)size) == 1;
+}
+
+int net_poll(NetPacket *pkt) {
+  int len = em_ws_poll(pkt->raw, (int)sizeof(pkt->raw));
+  if (len <= 0)
+    return 0;
+  g_net.last_recv_time = (float)GetTime();
+  return len;
+}
+
+#else // !__EMSCRIPTEN__ (POSIX sockets)
+
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
+
 static struct sockaddr_in g_remote_addr;
 static bool g_has_remote_addr = false;
 
@@ -35,6 +226,13 @@ static bool set_nonblocking(int fd) {
   if (flags == -1)
     return false;
   return fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1;
+}
+
+bool net_init_web(const char *ws_url, const char *room_code, NetMode mode) {
+  (void)ws_url;
+  (void)room_code;
+  (void)mode;
+  return false;
 }
 
 bool net_init_host(int port) {
@@ -172,6 +370,8 @@ int net_poll(NetPacket *pkt) {
   g_net.last_recv_time = (float)GetTime();
   return (int)len;
 }
+
+#endif // __EMSCRIPTEN__
 
 void net_send_hello(void) {
   PktHello p = {

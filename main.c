@@ -13,6 +13,19 @@
 #include <string.h>
 #include <time.h>
 
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#endif
+
+typedef enum {
+  APP_STATE_LOBBY = 0,
+  APP_STATE_PLAYING,
+} AppState;
+
+static AppState g_app_state = APP_STATE_PLAYING;
+static bool g_main_cart_init = false;
+static bool g_remote_cart_init = false;
+
 static Cart main_cart;
 static Cart remote_cart;
 static bool has_remote_cart = false;
@@ -258,16 +271,20 @@ static void apply_remote_shopping_list(const PktInit *init) {
   crash_toast_text[0] = '\0';
 }
 
+static void restart_match(void);
+
 static void cleanup_game_world(void) {
   if (world_initialized) {
     island_shelfarr_free(&shelves);
     island_posterarr_free(&posters);
     itemarr_free_all(&items);
     wallarr_free_all(&walls);
-    itemarr_free_all(&main_cart.items);
-    main_cart.mass = main_cart.base_mass;
-    main_cart.mom_inertia = main_cart.base_mom_inertia;
-    if (g_net.mode != NET_MODE_SINGLE) {
+    if (g_main_cart_init) {
+      itemarr_free_all(&main_cart.items);
+      main_cart.mass = main_cart.base_mass;
+      main_cart.mom_inertia = main_cart.base_mom_inertia;
+    }
+    if (g_remote_cart_init && g_net.mode != NET_MODE_SINGLE) {
       itemarr_free_all(&remote_cart.items);
       remote_cart.mass = remote_cart.base_mass;
       remote_cart.mom_inertia = remote_cart.base_mom_inertia;
@@ -275,6 +292,171 @@ static void cleanup_game_world(void) {
     world_initialized = false;
   }
 }
+
+static void free_carts(void) {
+  if (g_main_cart_init) {
+    cart_free(&main_cart);
+    g_main_cart_init = false;
+  }
+  if (g_remote_cart_init) {
+    cart_free(&remote_cart);
+    g_remote_cart_init = false;
+  }
+}
+
+static void start_singleplayer(void) {
+  cleanup_game_world();
+  free_carts();
+  net_close();
+  g_net.mode = NET_MODE_SINGLE;
+  has_remote_cart = false;
+
+  main_cart =
+      cart_new_goofy(DARKBLUE, BLUE, BLACK, Vector2Zero(), 4,
+                     (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
+                     (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
+  main_cart.pos = (Vector2){10.0f, 10.0f};
+  g_main_cart_init = true;
+
+  init_game_world((uint32_t)time(NULL), NULL);
+  g_app_state = APP_STATE_PLAYING;
+}
+
+static void start_host(const char *room_code, const char *ws_url, int port) {
+  cleanup_game_world();
+  free_carts();
+
+#if defined(__EMSCRIPTEN__)
+  net_init_web(ws_url, room_code, NET_MODE_HOST);
+#else
+  (void)room_code;
+  (void)ws_url;
+  net_init_host(port);
+#endif
+
+  // Player 1 (Blue)
+  main_cart =
+      cart_new_goofy(DARKBLUE, BLUE, BLACK, Vector2Zero(), 4,
+                     (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
+                     (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
+  main_cart.pos = (Vector2){9.5f, 10.0f};
+  g_main_cart_init = true;
+
+  // Player 2 (Red)
+  remote_cart =
+      cart_new_goofy(MAROON, RED, DARKGRAY, Vector2Zero(), 4,
+                     (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
+                     (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
+  remote_cart.pos = (Vector2){10.5f, 10.0f};
+  remote_target_pos = remote_cart.pos;
+  g_remote_cart_init = true;
+  has_remote_cart = false;
+
+  init_game_world((uint32_t)time(NULL), NULL);
+  g_app_state = APP_STATE_PLAYING;
+}
+
+static void start_client(const char *join_ip_or_room, const char *ws_url, int port) {
+  cleanup_game_world();
+  free_carts();
+
+#if defined(__EMSCRIPTEN__)
+  net_init_web(ws_url, join_ip_or_room, NET_MODE_CLIENT);
+#else
+  (void)ws_url;
+  net_init_client(join_ip_or_room, port);
+#endif
+
+  // Local player is Player 2 (Red)
+  main_cart =
+      cart_new_goofy(MAROON, RED, DARKGRAY, Vector2Zero(), 4,
+                     (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
+                     (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
+  main_cart.pos = (Vector2){10.5f, 10.0f};
+  g_main_cart_init = true;
+
+  // Remote player is Player 1 (Blue)
+  remote_cart =
+      cart_new_goofy(DARKBLUE, BLUE, BLACK, Vector2Zero(), 4,
+                     (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
+                     (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
+  remote_cart.pos = (Vector2){9.5f, 10.0f};
+  remote_target_pos = remote_cart.pos;
+  g_remote_cart_init = true;
+  has_remote_cart = false;
+
+  g_app_state = APP_STATE_PLAYING;
+  net_send_hello();
+  g_net.last_send_time = (float)GetTime();
+}
+
+static void return_to_lobby(void) {
+  cleanup_game_world();
+  free_carts();
+  net_close();
+  has_remote_cart = false;
+  g_app_state = APP_STATE_LOBBY;
+#if defined(__EMSCRIPTEN__)
+  EM_ASM({
+    if (window.onReturnToLobby) window.onReturnToLobby();
+  });
+#endif
+}
+
+#if defined(__EMSCRIPTEN__)
+EMSCRIPTEN_KEEPALIVE
+void web_start_singleplayer(void) {
+  start_singleplayer();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void web_start_host(const char *room_code, const char *ws_url) {
+  start_host(room_code, ws_url, DEFAULT_NET_PORT);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void web_start_join(const char *room_code, const char *ws_url) {
+  start_client(room_code, ws_url, DEFAULT_NET_PORT);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void web_return_to_lobby(void) {
+  return_to_lobby();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void web_request_rematch(void) {
+  restart_match();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void web_resize(int width, int height) {
+  if (width < 200 || height < 200) return;
+  SetWindowSize(width, height);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void web_zoom_in(void) {
+  cam.zoom += 15.0f;
+  if (cam.zoom > 220.0f)
+    cam.zoom = 220.0f;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void web_zoom_out(void) {
+  cam.zoom -= 15.0f;
+  if (cam.zoom < 60.0f)
+    cam.zoom = 60.0f;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void web_peer_joined(void) {
+  if (g_net.mode == NET_MODE_HOST && world_initialized) {
+    net_send_init(net_seed, shopping_list, shopping_list_len, host_grid_mask);
+    g_net.state = NET_STATE_CONNECTING;
+  }
+}
+#endif
 
 static void restart_match(void) {
   if (g_net.mode == NET_MODE_SINGLE) {
@@ -587,6 +769,46 @@ static void handle_client_collision_event(const PktCollisionEvent *ev) {
 }
 
 static void DrawTickFrame(void) {
+  if (g_app_state == APP_STATE_LOBBY) {
+    BeginDrawing();
+    ClearBackground((Color){15, 23, 42, 255});
+
+    int sw = GetScreenWidth();
+    int sh = GetScreenHeight();
+
+    const char *title = "gloBUS";
+    int tw = MeasureText(title, 56);
+    DrawText(title, sw / 2 - tw / 2, sh / 2 - 120, 56, (Color){96, 165, 250, 255});
+
+    const char *sub = "Shopping Cart Simulator";
+    int subw = MeasureText(sub, 20);
+    DrawText(sub, sw / 2 - subw / 2, sh / 2 - 50, 20, (Color){148, 163, 184, 255});
+
+    const char *hint = "Use the lobby menu above to create/join a room or play solo!";
+    int hw = MeasureText(hint, 16);
+    DrawText(hint, sw / 2 - hw / 2, sh / 2 + 10, 16, (Color){203, 213, 225, 255});
+
+    const char *ctrls = "Controls: WASD or H/J/K/L to drive | SPACE/ENTER/E to pick items";
+    int cw = MeasureText(ctrls, 14);
+    DrawText(ctrls, sw / 2 - cw / 2, sh / 2 + 45, 14, (Color){100, 116, 139, 255});
+
+    const char *solo = "Press [1] or [SPACE] for Quick Solo Practice";
+    int solow = MeasureText(solo, 15);
+    DrawText(solo, sw / 2 - solow / 2, sh / 2 + 85, 15, (Color){59, 130, 246, 255});
+
+    EndDrawing();
+
+    if (IsKeyPressed(KEY_ONE) || IsKeyPressed(KEY_SPACE)) {
+      start_singleplayer();
+    }
+    return;
+  }
+
+  if (IsKeyPressed(KEY_ESCAPE)) {
+    return_to_lobby();
+    return;
+  }
+
   float delta = GetFrameTime();
   float now = (float)GetTime();
 
@@ -748,17 +970,28 @@ static void DrawTickFrame(void) {
   if (g_net.mode == NET_MODE_CLIENT && !world_initialized) {
     BeginDrawing();
     ClearBackground(RAYWHITE);
+#if defined(__EMSCRIPTEN__)
+    const char *status_str = TextFormat("Connecting to Room %s...", g_net.remote_ip);
+    const char *sub_str = "Waiting for game world init from host...";
+#else
     const char *status_str = TextFormat("Connecting to Host at %s:%d...",
                                         g_net.remote_ip, g_net.remote_port);
+    const char *sub_str =
+        "Waiting for game world init from host (Tailscale)...";
+#endif
     int sw = MeasureText(status_str, 24);
     DrawText(status_str, GetScreenWidth() / 2 - sw / 2,
              GetScreenHeight() / 2 - 20, 24, DARKBLUE);
 
-    const char *sub_str =
-        "Waiting for game world init from host (Tailscale)...";
     int ssw = MeasureText(sub_str, 16);
     DrawText(sub_str, GetScreenWidth() / 2 - ssw / 2,
              GetScreenHeight() / 2 + 15, 16, GRAY);
+
+    const char *esc_hint = "Press [ESC] to return to Lobby";
+    int ehw = MeasureText(esc_hint, 14);
+    DrawText(esc_hint, GetScreenWidth() / 2 - ehw / 2,
+             GetScreenHeight() / 2 + 45, 14, DARKGRAY);
+
     EndDrawing();
     return;
   }
@@ -965,11 +1198,17 @@ static void DrawTickFrame(void) {
   float wheel = GetMouseWheelMove();
   if (wheel != 0.0f) {
     cam.zoom += wheel * 10.0f;
-    if (cam.zoom < 60.0f)
-      cam.zoom = 60.0f;
-    if (cam.zoom > 160.0f)
-      cam.zoom = 160.0f;
   }
+  if (IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD)) {
+    cam.zoom += 15.0f;
+  }
+  if (IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT)) {
+    cam.zoom -= 15.0f;
+  }
+  if (cam.zoom < 60.0f)
+    cam.zoom = 60.0f;
+  if (cam.zoom > 220.0f)
+    cam.zoom = 220.0f;
 
   cam.target = main_cart.pos;
   if (rot_follow)
@@ -1344,9 +1583,15 @@ static void DrawTickFrame(void) {
                          (Color){255, 255, 255, 230});
     DrawRectangleRoundedLinesEx((Rectangle){badge_x, 8.0f, badge_w, 36.0f},
                                 0.25f, 4, 1.5f, DARKBLUE);
+#if defined(__EMSCRIPTEN__)
+    const char *wait_str =
+        TextFormat("ROOM %s - Waiting for opponent to join...",
+                   g_net.remote_ip);
+#else
     const char *wait_str =
         TextFormat("HOSTING (port %d) - Waiting for Player 2 to join...",
                    g_net.remote_port);
+#endif
     DrawText(wait_str,
              (int)(badge_x + (badge_w - MeasureText(wait_str, 15)) * 0.5f), 18,
              15, DARKBLUE);
@@ -1382,7 +1627,7 @@ static void DrawTickFrame(void) {
       const char *t_str = TextFormat("Final Time: %.3f seconds", winning_time);
       DrawText(t_str, (int)(mx + (mw - MeasureText(t_str, 20)) * 0.5f),
                (int)(my + 115), 20, BLACK);
-      const char *rem_str = "Press [R] to Play Again";
+      const char *rem_str = "Press [R] to Play Again  |  [ESC] Lobby";
       DrawText(rem_str, (int)(mx + (mw - MeasureText(rem_str, 18)) * 0.5f),
                (int)(my + 165), 18, DARKBLUE);
     } else {
@@ -1409,10 +1654,10 @@ static void DrawTickFrame(void) {
 
       const char *rem_str = "";
       if (g_net.mode == NET_MODE_HOST) {
-        rem_str = "Press [R] to Start Rematch";
+        rem_str = "Press [R] to Start Rematch  |  [ESC] Lobby";
       } else {
-        rem_str = rematch_requested ? "Rematch Requested! Waiting for Host..."
-                                    : "Press [R] to Request Rematch";
+        rem_str = rematch_requested ? "Rematch Requested! Waiting for Host...  |  [ESC] Lobby"
+                                    : "Press [R] to Request Rematch  |  [ESC] Lobby";
       }
       DrawText(rem_str, (int)(mx + (mw - MeasureText(rem_str, 18)) * 0.5f),
                (int)(my + 162), 18, DARKBLUE);
@@ -1432,6 +1677,26 @@ static void DrawTickFrame(void) {
 }
 
 int main(int argc, char **argv) {
+#if defined(__EMSCRIPTEN__)
+  (void)argc;
+  (void)argv;
+  SetTraceLogLevel(LOG_INFO);
+  SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+  InitWindow(800, 600, "gloBUS");
+  SetTargetFPS(60);
+
+  cam = (Camera2D){
+      (Vector2){(float)GetScreenWidth() / 2.0f,
+                (float)GetScreenHeight() / 2.0f},
+      (Vector2){0.0f, 0.0f},
+      0.0f,
+      120.0f,
+  };
+
+  g_app_state = APP_STATE_LOBBY;
+  emscripten_set_main_loop(DrawTickFrame, 0, 1);
+  return 0;
+#else
   int port = DEFAULT_NET_PORT;
   const char *join_ip = NULL;
   NetMode mode = NET_MODE_SINGLE;
@@ -1482,61 +1747,21 @@ int main(int argc, char **argv) {
   InitWindow(800, 600, "gloBUS");
   SetTargetFPS(60);
 
-  // Initialize carts based on role
-  if (mode == NET_MODE_HOST) {
-    net_init_host(port);
-
-    // Player 1 (Blue)
-    main_cart =
-        cart_new_goofy(DARKBLUE, BLUE, BLACK, Vector2Zero(), 4,
-                       (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
-                       (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
-    main_cart.pos = (Vector2){9.5f, 10.0f};
-
-    // Player 2 (Red)
-    remote_cart =
-        cart_new_goofy(MAROON, RED, DARKGRAY, Vector2Zero(), 4,
-                       (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
-                       (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
-    remote_cart.pos = (Vector2){10.5f, 10.0f};
-    remote_target_pos = remote_cart.pos;
-
-    init_game_world((uint32_t)time(NULL), NULL);
-  } else if (mode == NET_MODE_CLIENT) {
-    net_init_client(join_ip, port);
-
-    // Local player is Player 2 (Red)
-    main_cart =
-        cart_new_goofy(MAROON, RED, DARKGRAY, Vector2Zero(), 4,
-                       (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
-                       (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
-    main_cart.pos = (Vector2){10.5f, 10.0f};
-
-    // Remote player is Player 1 (Blue)
-    remote_cart =
-        cart_new_goofy(DARKBLUE, BLUE, BLACK, Vector2Zero(), 4,
-                       (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
-                       (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
-    remote_cart.pos = (Vector2){9.5f, 10.0f};
-    remote_target_pos = remote_cart.pos;
-  } else {
-    // Singleplayer (Blue)
-    main_cart =
-        cart_new_goofy(DARKBLUE, BLUE, BLACK, Vector2Zero(), 4,
-                       (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
-                       (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
-    main_cart.pos = (Vector2){10.0f, 10.0f};
-
-    init_game_world((uint32_t)time(NULL), NULL);
-  }
-
   cam = (Camera2D){
       (Vector2){(float)GetScreenWidth() / 2.0f,
                 (float)GetScreenHeight() / 2.0f},
       (Vector2){0.0f, 0.0f},
       0.0f,
-      100.0f,
+      120.0f,
   };
+
+  if (mode == NET_MODE_HOST) {
+    start_host(NULL, NULL, port);
+  } else if (mode == NET_MODE_CLIENT) {
+    start_client(join_ip, NULL, port);
+  } else {
+    start_singleplayer();
+  }
 
   while (!WindowShouldClose()) {
     DrawTickFrame();
@@ -1546,15 +1771,13 @@ int main(int argc, char **argv) {
   }
 
   cleanup_game_world();
-  cart_free(&main_cart);
-  if (mode != NET_MODE_SINGLE) {
-    cart_free(&remote_cart);
-    net_close();
-  }
+  free_carts();
+  net_close();
   for (int i = 0; i < NUM_ITEMS; i++) {
     item_free(items_table[i]);
   }
 
   CloseWindow();
   return 0;
+#endif
 }

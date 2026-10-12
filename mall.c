@@ -63,7 +63,7 @@ void mall_generation(const char *filename, WallArr *walls, ItemArr *items,
                      uint8_t *out_grid_mask) {
   mall_seed_prng(seed);
 
-  int grid[MALL_HEIGHT][MALL_WIDTH];
+  static int grid[MALL_HEIGHT][MALL_WIDTH];
 
   if (in_grid_mask != NULL) {
     // Client path: unpack the authoritative grid sent by host!
@@ -133,11 +133,15 @@ void mall_generation(const char *filename, WallArr *walls, ItemArr *items,
   mall_seed_prng(seed);
 
   // Find all shelf islands using BFS
-  bool visited[MALL_HEIGHT][MALL_WIDTH] = {0};
+  static bool visited[MALL_HEIGHT][MALL_WIDTH];
+  memset(visited, 0, sizeof(visited));
   ShelfIsland *islands = malloc(MALL_WIDTH * MALL_HEIGHT * sizeof(ShelfIsland));
   IntVector2 *tile_pool = malloc(MALL_WIDTH * MALL_HEIGHT * sizeof(IntVector2));
   if (!islands || !tile_pool)
     perror_exit("islands malloc");
+
+  static int qx[MALL_WIDTH * MALL_HEIGHT];
+  static int qy[MALL_WIDTH * MALL_HEIGHT];
 
   int tile_pool_idx = 0;
   int island_count = 0;
@@ -146,7 +150,6 @@ void mall_generation(const char *filename, WallArr *walls, ItemArr *items,
     for (int x = 0; x < MALL_WIDTH; x++) {
       if (grid[y][x] == 1 && !visited[y][x]) {
         int start_pool_idx = tile_pool_idx;
-        int qx[4096], qy[4096];
         int qh = 0, qt = 0;
 
         qx[qt] = x;

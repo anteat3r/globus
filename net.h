@@ -152,6 +152,7 @@ extern NetContext g_net;
 
 bool net_init_host(int port);
 bool net_init_client(const char *host_ip, int port);
+bool net_init_web(const char *ws_url, const char *room_code, NetMode mode);
 void net_close(void);
 
 bool net_send(const void *data, size_t size);

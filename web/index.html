@@ -1,0 +1,985 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>gloBUS - Shopping Cart Simulator</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛒</text></svg>">
+  <style>
+    :root {
+      --bg-color: #0f172a;
+      --card-bg: rgba(30, 41, 59, 0.85);
+      --card-border: #334155;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --success: #10b981;
+      --danger: #ef4444;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      display: flex;
+      flex-direction: column;
+      user-select: none;
+    }
+
+    /* Navbar */
+    header {
+      width: 100%;
+      height: 48px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--card-border);
+      background: rgba(15, 23, 42, 0.95);
+      backdrop-filter: blur(8px);
+      z-index: 20;
+      flex-shrink: 0;
+    }
+
+    body.fullscreen-mode header {
+      display: none;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 1.2rem;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+    }
+
+    .brand span.badge {
+      font-size: 0.7rem;
+      background: #2563eb;
+      color: #fff;
+      padding: 2px 7px;
+      border-radius: 999px;
+      text-transform: uppercase;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+
+    .nav-stats {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 0.85rem;
+    }
+
+    .stat-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--card-bg);
+      padding: 5px 12px;
+      border-radius: 20px;
+      border: 1px solid var(--card-border);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #64748b;
+    }
+    .status-dot.online { background: var(--success); box-shadow: 0 0 8px var(--success); }
+    .status-dot.busy { background: #f59e0b; box-shadow: 0 0 8px #f59e0b; }
+
+    /* Main Container */
+    main {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      margin: 0;
+      overflow: hidden;
+      background: #000;
+    }
+
+    #game-container {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      background: #000;
+    }
+
+    canvas.emscripten {
+      width: 100% !important;
+      height: 100% !important;
+      display: block;
+      outline: none;
+    }
+
+    /* Lobby Overlay */
+    #lobby-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.88);
+      backdrop-filter: blur(8px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      z-index: 10;
+      transition: opacity 0.25s ease, visibility 0.25s;
+    }
+
+    #lobby-overlay.hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .lobby-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      width: 100%;
+      max-width: 520px;
+      padding: 28px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    }
+
+    .lobby-header {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+
+    .lobby-header h1 {
+      font-size: 2.2rem;
+      font-weight: 900;
+      letter-spacing: -1px;
+      background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 50%, #93c5fd 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .lobby-header p {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      margin-top: 4px;
+    }
+
+    .mode-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    button.btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 12px 18px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      border-radius: 10px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      color: #fff;
+    }
+
+    button.btn-primary {
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      border-color: #3b82f6;
+    }
+    button.btn-primary:hover {
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      transform: translateY(-1px);
+    }
+
+    button.btn-secondary {
+      background: #334155;
+      border-color: #475569;
+    }
+    button.btn-secondary:hover {
+      background: #475569;
+      transform: translateY(-1px);
+    }
+
+    button.btn-success {
+      background: linear-gradient(135deg, #059669, #047857);
+      border-color: #10b981;
+    }
+    button.btn-success:hover {
+      background: linear-gradient(135deg, #10b981, #059669);
+      transform: translateY(-1px);
+    }
+
+    .join-group {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+
+    .join-input {
+      flex: 1;
+      background: #0f172a;
+      border: 1px solid var(--card-border);
+      color: #fff;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 1rem;
+      text-transform: uppercase;
+      font-weight: 700;
+      letter-spacing: 1px;
+    }
+    .join-input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    /* Room List */
+    .rooms-section {
+      border-top: 1px solid var(--card-border);
+      padding-top: 16px;
+    }
+
+    .rooms-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    .rooms-list {
+      max-height: 120px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .room-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #0f172a;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      border: 1px solid var(--card-border);
+    }
+
+    .room-badge {
+      font-weight: 700;
+      color: #60a5fa;
+      letter-spacing: 0.5px;
+    }
+
+    /* Top In-Game Bar */
+    #ingame-bar {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      right: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      pointer-events: none;
+      z-index: 5;
+    }
+
+    .bar-pill {
+      pointer-events: auto;
+      background: rgba(15, 23, 42, 0.8);
+      backdrop-filter: blur(6px);
+      border: 1px solid var(--card-border);
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .btn-link {
+      background: none;
+      border: none;
+      color: #60a5fa;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: underline;
+    }
+
+    /* Loader */
+    #loader-overlay {
+      position: absolute;
+      inset: 0;
+      background: #0f172a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 30;
+      transition: opacity 0.4s ease;
+    }
+
+    #loader-overlay.fade-out {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .spinner {
+      font-size: 3rem;
+      animation: bounce 1s infinite alternate;
+      margin-bottom: 16px;
+    }
+
+    @keyframes bounce {
+      from { transform: translateY(0); }
+      to { transform: translateY(-12px); }
+    }
+
+    .progress-bar-bg {
+      width: 280px;
+      height: 8px;
+      background: #1e293b;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-top: 12px;
+    }
+
+    .progress-bar-fill {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, #3b82f6, #60a5fa);
+      transition: width 0.2s ease;
+    }
+
+    /* Controls guide */
+    .controls-guide {
+      margin-top: 14px;
+      width: 100%;
+      max-width: 520px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 12px 18px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+      font-size: 0.8rem;
+    }
+
+    .guide-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-muted);
+    }
+
+    .kbd {
+      background: #0f172a;
+      border: 1px solid #475569;
+      color: #f1f5f9;
+      padding: 2px 7px;
+      border-radius: 5px;
+      font-size: 0.75rem;
+      font-weight: 700;
+    }
+
+    /* Toast */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      background: #1e293b;
+      border: 1px solid var(--accent);
+      color: #fff;
+      padding: 10px 20px;
+      border-radius: 8px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.4);
+      z-index: 100;
+      transform: translateY(100px);
+      opacity: 0;
+      transition: all 0.3s ease;
+      font-size: 0.9rem;
+    }
+    #toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      🛒 gloBUS
+      <span class="badge">Web Edition</span>
+    </div>
+    <div class="nav-stats">
+      <button class="stat-pill fs-btn" style="cursor: pointer; background: var(--card-bg); color: var(--text-main); font-weight: 600;" onclick="toggleFullscreen()" title="Toggle Fullscreen (F)">
+        ⛶ Fullscreen
+      </button>
+      <div class="stat-pill">
+        <div id="net-dot" class="status-dot"></div>
+        <span id="net-status-text">Connecting...</span>
+      </div>
+      <div id="ping-display" class="stat-pill" style="display: none;">
+        <span>Latency: <strong id="ping-val">--</strong> ms</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div id="game-container">
+      <!-- Loading overlay -->
+      <div id="loader-overlay">
+        <div class="spinner">🛒</div>
+        <h3 id="loader-status">Loading Supermarket...</h3>
+        <div class="progress-bar-bg">
+          <div id="progress-bar" class="progress-bar-fill"></div>
+        </div>
+      </div>
+
+      <!-- In-game top overlay bar -->
+      <div id="ingame-bar" style="display: none;">
+        <div class="bar-pill">
+          <span id="room-label">Solo Practice</span>
+          <button id="copy-btn" class="btn-link" style="display: none;" onclick="copyRoomLink()">📋 Copy Invite Link</button>
+        </div>
+        <div class="bar-pill">
+          <button class="btn-link" onclick="zoomOut()" title="Zoom Out (-)" style="text-decoration: none; padding: 2px 6px; font-size: 1rem;">🔍−</button>
+          <button class="btn-link" onclick="zoomIn()" title="Zoom In (+)" style="text-decoration: none; padding: 2px 6px; font-size: 1rem;">🔍+</button>
+          <button class="btn-link fs-btn" onclick="toggleFullscreen()" style="text-decoration: none; margin-left: 6px;">⛶ Fullscreen</button>
+          <button class="btn-link" onclick="triggerReturnToLobby()" style="margin-left: 6px;">⬅ Lobby (Esc)</button>
+        </div>
+      </div>
+
+      <!-- Raylib WebGL Canvas -->
+      <canvas id="canvas" class="emscripten" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+
+      <!-- Lobby UI Modal -->
+      <div id="lobby-overlay">
+        <div class="lobby-card">
+          <div class="lobby-header">
+            <h1>gloBUS</h1>
+            <p>Shopping Cart Racing Simulator</p>
+          </div>
+
+          <div class="mode-buttons">
+            <button class="btn btn-secondary" onclick="startSingleplayer()">
+              🛒 Solo Practice
+            </button>
+            <button class="btn btn-primary" onclick="startQuickMatch()">
+              ⚡ Quick Match
+            </button>
+          </div>
+
+          <div class="join-group">
+            <button class="btn btn-success" onclick="createRoom()">
+              🏠 Host Room
+            </button>
+            <input type="text" id="room-input" class="join-input" placeholder="ROOM CODE" maxlength="8">
+            <button class="btn btn-primary" onclick="joinRoomFromInput()">
+              Join
+            </button>
+          </div>
+
+          <div class="rooms-section">
+            <div class="rooms-title">
+              <span>Public Waiting Rooms</span>
+              <button class="btn-link" onclick="refreshRooms()" style="font-size: 0.75rem;">↻ Refresh</button>
+            </div>
+            <div id="rooms-list" class="rooms-list">
+              <div style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 10px;">
+                Searching for open lobbies...
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Controls cheat sheet -->
+        <div class="controls-guide">
+          <div class="guide-item">
+            <span class="kbd">W</span> <span class="kbd">A</span> <span class="kbd">S</span> <span class="kbd">D</span>
+            <span>Standard drive & turn</span>
+          </div>
+          <div class="guide-item">
+            <span class="kbd">H</span> <span class="kbd">J</span> / <span class="kbd">K</span> <span class="kbd">L</span>
+            <span>Tank steer wheels</span>
+          </div>
+          <div class="guide-item">
+            <span class="kbd">SPACE</span> / <span class="kbd">E</span>
+            <span>Grab grocery item</span>
+          </div>
+          <div class="guide-item">
+            <span class="kbd">F</span>
+            <span>Toggle Fullscreen</span>
+          </div>
+          <div class="guide-item">
+            <span class="kbd">+</span> / <span class="kbd">−</span>
+            <span>Zoom in / out</span>
+          </div>
+          <div class="guide-item">
+            <span class="kbd">R</span>
+            <span>Rematch</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div id="toast"></div>
+
+  <!-- Emscripten Module Setup -->
+  <script>
+    let isWasmReady = false;
+    let currentRoom = null;
+    let currentRole = null; // 'host' or 'client'
+    let ws = null;
+
+    // Toast helper
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.innerText = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 3500);
+    }
+
+    // Unified persistent WebSocket connection
+    function getWsUrl() {
+      const loc = window.location;
+      const proto = (loc.protocol === 'https:') ? 'wss:' : 'ws:';
+      return proto + '//' + loc.host + '/ws';
+    }
+
+    function initNet() {
+      if (window._globus_net && window._globus_net.ws &&
+         (window._globus_net.ws.readyState === WebSocket.OPEN || window._globus_net.ws.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+
+      window._globus_net = {
+        ws: null,
+        queue: [],
+        connected: false,
+        role: null,
+        room: null,
+      };
+
+      try {
+        const socket = new WebSocket(getWsUrl());
+        socket.binaryType = 'arraybuffer';
+        window._globus_net.ws = socket;
+
+        socket.onopen = () => {
+          console.log('[NET] Connected to relay server');
+          window._globus_net.connected = true;
+          document.getElementById('net-dot').className = 'status-dot online';
+          document.getElementById('net-status-text').innerText = 'Server Online';
+          refreshRooms();
+        };
+
+        socket.onmessage = (event) => {
+          if (typeof event.data === 'string') {
+            try {
+              const data = JSON.parse(event.data);
+              if (data.type === 'room_list') {
+                renderRoomList(data.rooms);
+              } else if (data.type === 'room_created') {
+                if (window._globus_net) window._globus_net.serverRoom = data.room;
+                if (currentRoom !== data.room || currentRole !== 'host') {
+                  onRoomReady(data.room, 'host');
+                }
+              } else if (data.type === 'room_joined') {
+                if (window._globus_net) window._globus_net.serverRoom = data.room;
+                if (currentRoom !== data.room || currentRole !== 'client') {
+                  onRoomReady(data.room, 'client');
+                }
+              } else if (data.type === 'peer_joined') {
+                showToast('Opponent connected to room!');
+                if (currentRole === 'host' && isWasmReady) {
+                  try { Module.ccall('web_peer_joined', null, [], []); } catch(e) {}
+                }
+              } else if (data.type === 'peer_left') {
+                showToast('Opponent disconnected: ' + (data.reason || 'Left match'));
+              } else if (data.type === 'error') {
+                showToast('Error: ' + data.message);
+              }
+            } catch(e) {}
+          } else if (event.data instanceof ArrayBuffer) {
+            window._globus_net.queue.push(new Uint8Array(event.data));
+          }
+        };
+
+        socket.onerror = (err) => {
+          console.error('[NET] Socket error:', err);
+          document.getElementById('net-dot').className = 'status-dot';
+          document.getElementById('net-status-text').innerText = 'Server Error';
+        };
+
+        socket.onclose = () => {
+          console.log('[NET] Socket closed');
+          window._globus_net.connected = false;
+          window._globus_net.serverRoom = null;
+          document.getElementById('net-dot').className = 'status-dot';
+          document.getElementById('net-status-text').innerText = 'Disconnected';
+          setTimeout(initNet, 2500);
+        };
+      } catch(e) {
+        console.error('[NET] Connection exception:', e);
+        setTimeout(initNet, 2500);
+      }
+    }
+
+    function refreshRooms() {
+      const ws = window._globus_net ? window._globus_net.ws : null;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'list_rooms' }));
+      } else {
+        fetch('/api/rooms').then(r => r.json()).then(data => {
+          renderRoomList(data.rooms || []);
+        }).catch(() => {});
+      }
+    }
+
+    function renderRoomList(rooms) {
+      const listEl = document.getElementById('rooms-list');
+      if (!rooms || rooms.length === 0) {
+        listEl.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 10px;">No public lobbies waiting. Create one!</div>';
+        return;
+      }
+      listEl.innerHTML = '';
+      rooms.forEach(r => {
+        const item = document.createElement('div');
+        item.className = 'room-item';
+        item.innerHTML = `
+          <div><span class="room-badge">ROOM ${r.id}</span> <span style="color: #64748b; font-size: 0.75rem;">(1/2 players)</span></div>
+          <button class="btn btn-primary" style="padding: 4px 10px; font-size: 0.8rem;" onclick="joinRoom('${r.id}')">Join</button>
+        `;
+        listEl.appendChild(item);
+      });
+    }
+
+    function sendOrWait(msgObj) {
+      const ws = window._globus_net ? window._globus_net.ws : null;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(msgObj));
+        return;
+      }
+      showToast('Connecting to server...');
+      let attempts = 0;
+      const interval = setInterval(() => {
+        attempts++;
+        const s = window._globus_net ? window._globus_net.ws : null;
+        if (s && s.readyState === WebSocket.OPEN) {
+          clearInterval(interval);
+          s.send(JSON.stringify(msgObj));
+        } else if (attempts > 30) {
+          clearInterval(interval);
+          showToast('Could not connect to server');
+        }
+      }, 100);
+    }
+
+    // Game lifecycle functions
+    function startSingleplayer() {
+      if (!isWasmReady) return;
+      currentRoom = null;
+      currentRole = null;
+      document.getElementById('lobby-overlay').classList.add('hidden');
+      document.getElementById('ingame-bar').style.display = 'flex';
+      document.getElementById('room-label').innerText = 'Solo Practice';
+      document.getElementById('copy-btn').style.display = 'none';
+      resizeCanvas();
+      Module.ccall('web_start_singleplayer', null, [], []);
+      setTimeout(resizeCanvas, 50);
+      document.getElementById('canvas').focus();
+    }
+
+    function createRoom() {
+      if (!isWasmReady) return;
+      const code = (document.getElementById('room-input').value || '').trim().toUpperCase();
+      sendOrWait({ type: 'create_room', room: code });
+    }
+
+    function joinRoom(roomId) {
+      if (!isWasmReady) return;
+      sendOrWait({ type: 'join_room', room: roomId });
+    }
+
+    function joinRoomFromInput() {
+      const code = (document.getElementById('room-input').value || '').trim().toUpperCase();
+      if (!code) {
+        showToast('Please enter a room code');
+        return;
+      }
+      joinRoom(code);
+    }
+
+    function startQuickMatch() {
+      if (!isWasmReady) return;
+      sendOrWait({ type: 'quick_match' });
+    }
+
+    function onRoomReady(roomId, role) {
+      if (currentRoom === roomId && currentRole === role) {
+        return; // Already initialized for this room!
+      }
+      currentRoom = roomId;
+      currentRole = role;
+      if (window._globus_net) {
+        window._globus_net.role = role;
+        window._globus_net.room = roomId;
+        window._globus_net.serverRoom = roomId;
+      }
+
+      document.getElementById('lobby-overlay').classList.add('hidden');
+      document.getElementById('ingame-bar').style.display = 'flex';
+      document.getElementById('room-label').innerText = `Room: ${roomId} (${role.toUpperCase()})`;
+      document.getElementById('copy-btn').style.display = 'inline-block';
+      document.getElementById('ping-display').style.display = 'flex';
+
+      resizeCanvas();
+      if (role === 'host') {
+        Module.ccall('web_start_host', null, ['string', 'string'], [roomId, '']);
+      } else {
+        Module.ccall('web_start_join', null, ['string', 'string'], [roomId, '']);
+      }
+      setTimeout(resizeCanvas, 50);
+      document.getElementById('canvas').focus();
+    }
+
+    function triggerReturnToLobby() {
+      if (!isWasmReady) return;
+      Module.ccall('web_return_to_lobby', null, [], []);
+      onReturnToLobby();
+    }
+
+    function onReturnToLobby() {
+      currentRoom = null;
+      currentRole = null;
+      document.getElementById('lobby-overlay').classList.remove('hidden');
+      document.getElementById('ingame-bar').style.display = 'none';
+      document.getElementById('ping-display').style.display = 'none';
+      refreshRooms();
+      setTimeout(resizeCanvas, 50);
+    }
+
+    window.onReturnToLobby = onReturnToLobby;
+
+    window.onGameOver = function(winnerId, finalTime) {
+      const myId = (currentRole === 'client') ? 2 : 1;
+      if (winnerId === myId) {
+        showToast(`🏆 YOU WON in ${finalTime.toFixed(2)}s! Press [R] for rematch!`);
+      } else {
+        showToast(`Opponent finished first! Press [R] for rematch!`);
+      }
+    };
+
+    window.onPeerLeft = function(ctrl) {
+      showToast('Opponent disconnected: ' + (ctrl.reason || 'Left'));
+    };
+
+    function copyRoomLink() {
+      if (!currentRoom) return;
+      const url = `${window.location.origin}/?room=${currentRoom}`;
+      navigator.clipboard.writeText(url).then(() => {
+        showToast('Invite link copied to clipboard!');
+      }).catch(() => {
+        showToast('Share link: ' + url);
+      });
+    }
+
+    // Dynamic resolution & aspect ratio resize handler
+    function resizeCanvas() {
+      if (!isWasmReady) return;
+      const container = document.getElementById('game-container');
+      if (!container) return;
+
+      const w = Math.round(container.clientWidth);
+      const h = Math.round(container.clientHeight);
+      if (w < 100 || h < 100) return;
+
+      const canvas = document.getElementById('canvas');
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+        try {
+          Module.ccall('web_resize', null, ['number', 'number'], [w, h]);
+        } catch(e) {
+          console.warn('[RESIZE] web_resize error:', e);
+        }
+      }
+    }
+
+    // Fullscreen support
+    function toggleFullscreen() {
+      const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement);
+      if (!isFs) {
+        const el = document.documentElement;
+        const req = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
+        if (req) {
+          req.call(el).catch(err => {
+            console.warn('[FS] requestFullscreen error:', err);
+            document.body.classList.toggle('fullscreen-mode');
+            setTimeout(resizeCanvas, 50);
+          });
+        } else {
+          document.body.classList.toggle('fullscreen-mode');
+          setTimeout(resizeCanvas, 50);
+        }
+      } else {
+        const exit = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
+        if (exit) {
+          exit.call(document).catch(() => {});
+        } else {
+          document.body.classList.remove('fullscreen-mode');
+          setTimeout(resizeCanvas, 50);
+        }
+      }
+    }
+
+    function updateFullscreenButtons() {
+      const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.body.classList.contains('fullscreen-mode'));
+      document.body.classList.toggle('fullscreen-mode', isFs);
+      document.querySelectorAll('.fs-btn').forEach(btn => {
+        btn.innerHTML = isFs ? '🗗 Exit Fullscreen' : '⛶ Fullscreen';
+      });
+      setTimeout(resizeCanvas, 50);
+      setTimeout(resizeCanvas, 200);
+      setTimeout(resizeCanvas, 500);
+    }
+
+    document.addEventListener('fullscreenchange', updateFullscreenButtons);
+    document.addEventListener('webkitfullscreenchange', updateFullscreenButtons);
+    document.addEventListener('mozfullscreenchange', updateFullscreenButtons);
+
+    window.addEventListener('resize', () => {
+      resizeCanvas();
+    });
+
+    // Zoom controls
+    function zoomIn() {
+      if (!isWasmReady) return;
+      try { Module.ccall('web_zoom_in', null, [], []); } catch(e) {}
+    }
+
+    function zoomOut() {
+      if (!isWasmReady) return;
+      try { Module.ccall('web_zoom_out', null, [], []); } catch(e) {}
+    }
+
+    // Keyboard shortcuts: F for Fullscreen, +/- for Zoom
+    window.addEventListener('keydown', (e) => {
+      if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+      if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        toggleFullscreen();
+      } else if (e.key === '=' || e.key === '+') {
+        zoomIn();
+      } else if (e.key === '-' || e.key === '_') {
+        zoomOut();
+      }
+    });
+
+    document.getElementById('canvas').addEventListener('dblclick', () => {
+      toggleFullscreen();
+    });
+
+    // Emscripten Configuration
+    var Module = {
+      print: function(text) {
+        console.log('[RAYLIB]', text);
+      },
+      printErr: function(text) {
+        console.warn('[RAYLIB]', text);
+      },
+      canvas: (function() {
+        var canvas = document.getElementById('canvas');
+        return canvas;
+      })(),
+      setStatus: function(text) {
+        if (!text) return;
+        var m = text.match(/([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/);
+        if (m) {
+          var current = parseFloat(m[2]);
+          var total = parseFloat(m[4]);
+          var pct = Math.round((current / total) * 100);
+          document.getElementById('progress-bar').style.width = pct + '%';
+          document.getElementById('loader-status').innerText = 'Downloading Supermarket Assets (' + pct + '%)...';
+        } else {
+          document.getElementById('loader-status').innerText = text;
+        }
+      },
+      onRuntimeInitialized: function() {
+        isWasmReady = true;
+        const loader = document.getElementById('loader-overlay');
+        loader.classList.add('fade-out');
+        setTimeout(() => loader.style.display = 'none', 400);
+
+        // Immediate layout sync
+        resizeCanvas();
+        setTimeout(resizeCanvas, 50);
+        setTimeout(resizeCanvas, 200);
+        setTimeout(resizeCanvas, 600);
+
+        // Continuous observer for container geometry changes
+        if (window.ResizeObserver) {
+          const ro = new ResizeObserver(() => {
+            resizeCanvas();
+          });
+          ro.observe(document.getElementById('game-container'));
+        }
+
+        initNet();
+
+        // Check URL parameters for direct room joining
+        const params = new URLSearchParams(window.location.search);
+        const urlRoom = params.get('room');
+        if (urlRoom) {
+          document.getElementById('room-input').value = urlRoom;
+          showToast('Found invite link for room: ' + urlRoom);
+          if (params.get('host') === '1') {
+            createRoom();
+          } else {
+            joinRoom(urlRoom);
+          }
+        }
+      }
+    };
+
+    // Connect WebSocket immediately on page load
+    initNet();
+  </script>
+
+  <!-- Load Emscripten glue JavaScript -->
+  <script src="main.js"></script>
+</body>
+</html>

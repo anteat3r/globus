@@ -1,0 +1,17 @@
+# Object files and binaries
+*.o
+main
+
+# Build output for web (can be regenerated with make web)
+web/main.js
+web/main.wasm
+web/main.data
+
+# Node.js dependencies
+node_modules/
+server/node_modules/
+
+# OS / Editor files
+.DS_Store
+*.swp
+*~

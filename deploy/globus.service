@@ -1,0 +1,15 @@
+[Unit]
+Description=gloBUS Shopping Cart Simulator Web Server & Relay
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/globus
+ExecStart=/usr/bin/node server/server.js
+Restart=always
+RestartSec=5
+Environment=PORT=8080 HOST=0.0.0.0 NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
