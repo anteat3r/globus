@@ -334,6 +334,10 @@ bool net_init_client(const char *host_ip, int port) {
   return true;
 }
 
+#define MAX_UDP_CLIENTS 8
+static struct sockaddr_in g_clients[MAX_UDP_CLIENTS];
+static int g_num_clients = 0;
+
 void net_close(void) {
   if (g_net.sockfd >= 0) {
     close(g_net.sockfd);
@@ -342,15 +346,30 @@ void net_close(void) {
   g_net.state = NET_STATE_DISCONNECTED;
   g_net.is_connected = false;
   g_has_remote_addr = false;
+  g_num_clients = 0;
 }
 
 bool net_send(const void *data, size_t size) {
-  if (g_net.sockfd < 0 || !g_has_remote_addr)
+  if (g_net.sockfd < 0)
     return false;
 
-  ssize_t sent = sendto(g_net.sockfd, data, size, 0,
-                        (struct sockaddr *)&g_remote_addr, sizeof(g_remote_addr));
-  return sent == (ssize_t)size;
+  if (g_net.mode == NET_MODE_CLIENT) {
+    if (!g_has_remote_addr)
+      return false;
+    ssize_t sent = sendto(g_net.sockfd, data, size, 0,
+                          (struct sockaddr *)&g_remote_addr, sizeof(g_remote_addr));
+    return sent == (ssize_t)size;
+  } else if (g_net.mode == NET_MODE_HOST) {
+    bool ok = true;
+    for (int i = 0; i < g_num_clients; i++) {
+      ssize_t sent = sendto(g_net.sockfd, data, size, 0,
+                            (struct sockaddr *)&g_clients[i], sizeof(g_clients[i]));
+      if (sent != (ssize_t)size)
+        ok = false;
+    }
+    return (g_num_clients > 0) ? ok : false;
+  }
+  return false;
 }
 
 int net_poll(NetPacket *pkt) {
@@ -372,14 +391,31 @@ int net_poll(NetPacket *pkt) {
   if (len < (ssize_t)sizeof(PktHeader))
     return 0;
 
-  // On host side, if connecting or if sender changed, update remote address
+  // On host side, track clients and relay to other connected peers
   if (g_net.mode == NET_MODE_HOST) {
-    if (!g_has_remote_addr || pkt->header.type == PKT_HELLO) {
-      g_remote_addr = from;
+    int found = -1;
+    for (int i = 0; i < g_num_clients; i++) {
+      if (g_clients[i].sin_addr.s_addr == from.sin_addr.s_addr &&
+          g_clients[i].sin_port == from.sin_port) {
+        found = i;
+        break;
+      }
+    }
+    if (found == -1 && g_num_clients < MAX_UDP_CLIENTS) {
+      g_clients[g_num_clients++] = from;
       g_has_remote_addr = true;
       inet_ntop(AF_INET, &from.sin_addr, g_net.remote_ip,
                 sizeof(g_net.remote_ip));
       g_net.remote_port = ntohs(from.sin_port);
+    }
+
+    // Forward packet to all other clients
+    for (int i = 0; i < g_num_clients; i++) {
+      if (g_clients[i].sin_addr.s_addr != from.sin_addr.s_addr ||
+          g_clients[i].sin_port != from.sin_port) {
+        sendto(g_net.sockfd, pkt->raw, len, 0,
+               (struct sockaddr *)&g_clients[i], sizeof(g_clients[i]));
+      }
     }
   }
 
@@ -389,16 +425,27 @@ int net_poll(NetPacket *pkt) {
 
 #endif // __EMSCRIPTEN__
 
-void net_send_hello(void) {
-  PktHello p = {
-      .header = {.type = PKT_HELLO},
-      .player_name = "Player 2",
-  };
+void net_send_hello_multi(const char *name, uint8_t player_id, uint8_t team_id) {
+  PktHello p;
+  memset(&p, 0, sizeof(p));
+  p.header.type = PKT_HELLO;
+  if (name) {
+    strncpy(p.player_name, name, sizeof(p.player_name) - 1);
+  } else {
+    snprintf(p.player_name, sizeof(p.player_name), "Player %d", player_id);
+  }
+  p.player_id = player_id;
+  p.team_id = team_id;
   net_send(&p, sizeof(p));
 }
 
-void net_send_init(uint32_t seed, const RoomConfig *config, const int *slist,
-                   int slist_len, const uint8_t *grid_mask) {
+void net_send_hello(void) {
+  net_send_hello_multi("Player 2", 2, 2);
+}
+
+void net_send_init_multi(uint32_t seed, const RoomConfig *config, const int *slist,
+                         int slist_len, const uint8_t *grid_mask,
+                         uint8_t active_players_mask, const uint8_t *player_teams) {
   PktInit p;
   memset(&p, 0, sizeof(p));
   p.header.type = PKT_INIT;
@@ -415,7 +462,17 @@ void net_send_init(uint32_t seed, const RoomConfig *config, const int *slist,
   if (grid_mask) {
     memcpy(p.grid_mask, grid_mask, sizeof(p.grid_mask));
   }
+  p.active_players_mask = active_players_mask;
+  if (player_teams) {
+    memcpy(p.player_teams, player_teams, sizeof(p.player_teams));
+  }
   net_send(&p, sizeof(p));
+}
+
+void net_send_init(uint32_t seed, const RoomConfig *config, const int *slist,
+                   int slist_len, const uint8_t *grid_mask) {
+  uint8_t teams[MAX_NET_PLAYERS] = {1, 2, 1, 2};
+  net_send_init_multi(seed, config, slist, slist_len, grid_mask, 0x03, teams);
 }
 
 void net_send_ready(void) {
@@ -425,8 +482,9 @@ void net_send_ready(void) {
   net_send(&p, sizeof(p));
 }
 
-void net_send_cart_state(Vector2 pos, Vector2 vel, float rot, float ang_vel,
-                         int pick_side, Vector2 pick_pos, float mass) {
+void net_send_cart_state_multi(Vector2 pos, Vector2 vel, float rot, float ang_vel,
+                               int pick_side, Vector2 pick_pos, float mass,
+                               uint8_t player_id) {
   PktCartState p = {
       .header = {.type = PKT_CART_STATE},
       .seq = ++g_net.send_seq,
@@ -440,8 +498,14 @@ void net_send_cart_state(Vector2 pos, Vector2 vel, float rot, float ang_vel,
       .pick_pos_x = pick_pos.x,
       .pick_pos_y = pick_pos.y,
       .mass = mass,
+      .player_id = player_id,
   };
   net_send(&p, sizeof(p));
+}
+
+void net_send_cart_state(Vector2 pos, Vector2 vel, float rot, float ang_vel,
+                         int pick_side, Vector2 pick_pos, float mass) {
+  net_send_cart_state_multi(pos, vel, rot, ang_vel, pick_side, pick_pos, mass, 1);
 }
 
 void net_send_item_pick(int texture_id, Vector2 pos, int player_id) {
@@ -473,13 +537,18 @@ void net_send_bump(Vector2 impulse, float ang_impulse) {
   net_send(&p, sizeof(p));
 }
 
-void net_send_game_over(uint8_t winner_id, float final_time) {
+void net_send_game_over_multi(uint8_t winner_id, float final_time, uint8_t winning_team) {
   PktGameOver p = {
       .header = {.type = PKT_GAME_OVER},
       .winner_id = winner_id,
       .final_time = final_time,
+      .winning_team = winning_team,
   };
   net_send(&p, sizeof(p));
+}
+
+void net_send_game_over(uint8_t winner_id, float final_time) {
+  net_send_game_over_multi(winner_id, final_time, 0);
 }
 
 void net_send_collision_event(const PktCollisionEvent *event) {

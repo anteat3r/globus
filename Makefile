@@ -52,7 +52,7 @@ $(WEB_TARGET): $(SRCS)
 		-sALLOW_MEMORY_GROWTH=1 \
 		-sMAXIMUM_MEMORY=512MB \
 		-sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","UTF8ToString"]' \
-		-sEXPORTED_FUNCTIONS='["_main","_web_start_singleplayer","_web_start_host","_web_start_join","_web_return_to_lobby","_web_request_rematch","_web_resize","_web_zoom_in","_web_zoom_out","_web_peer_joined","_web_tab_resumed","_web_set_room_config_json"]' \
+		-sEXPORTED_FUNCTIONS='["_main","_web_start_singleplayer","_web_start_host","_web_start_join","_web_return_to_lobby","_web_request_rematch","_web_resize","_web_zoom_in","_web_zoom_out","_web_peer_joined","_web_tab_resumed","_web_set_room_config_json","_web_set_player_info"]' \
 		--preload-file res \
 		-o $(WEB_TARGET)
 	@echo "=============================================="

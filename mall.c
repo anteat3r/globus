@@ -81,23 +81,34 @@ RoomConfig room_config_default(void) {
   cfg.crash_impulse_mult = 1.0f;
   cfg.min_crash_speed = 0.02f;
   cfg.floor_theme = 0;
+  cfg.game_mode = GAME_MODE_FFA;
+  cfg.max_players = 4;
   return cfg;
 }
 
-void mall_pack_grid(int w, int h, const int *grid, uint8_t *mask) {
+void mall_pack_grid(int w, int h, const int grid[MALL_MAX_HEIGHT][MALL_MAX_WIDTH], uint8_t *mask) {
   memset(mask, 0, MALL_MAX_GRID_MASK_SIZE);
-  int total = w * h;
-  for (int i = 0; i < total; i++) {
-    if (grid[i]) {
-      mask[i / 8] |= (uint8_t)(1 << (i % 8));
+  int max_bits = MALL_MAX_GRID_MASK_SIZE * 8;
+  int bit = 0;
+  for (int y = 0; y < h && bit < max_bits; y++) {
+    for (int x = 0; x < w && bit < max_bits; x++) {
+      if (grid[y][x]) {
+        mask[bit / 8] |= (uint8_t)(1 << (bit % 8));
+      }
+      bit++;
     }
   }
 }
 
-void mall_unpack_grid(int w, int h, const uint8_t *mask, int *grid) {
-  int total = w * h;
-  for (int i = 0; i < total; i++) {
-    grid[i] = (mask[i / 8] & (1 << (i % 8))) ? 1 : 0;
+void mall_unpack_grid(int w, int h, const uint8_t *mask, int grid[MALL_MAX_HEIGHT][MALL_MAX_WIDTH]) {
+  memset(grid, 0, sizeof(int) * MALL_MAX_HEIGHT * MALL_MAX_WIDTH);
+  int max_bits = MALL_MAX_GRID_MASK_SIZE * 8;
+  int bit = 0;
+  for (int y = 0; y < h && bit < max_bits; y++) {
+    for (int x = 0; x < w && bit < max_bits; x++) {
+      grid[y][x] = (mask[bit / 8] & (1 << (bit % 8))) ? 1 : 0;
+      bit++;
+    }
   }
 }
 
@@ -121,7 +132,7 @@ void mall_generation(const RoomConfig *config, WallArr *walls, ItemArr *items,
 
   if (in_grid_mask != NULL) {
     // Client path: unpack the authoritative grid sent by host!
-    mall_unpack_grid(mall_w, mall_h, in_grid_mask, (int *)grid);
+    mall_unpack_grid(mall_w, mall_h, in_grid_mask, grid);
   } else {
     // Host / Singleplayer path: run WFC
     const uint8_t *pat = WFC_PRESET_CLASSIC;
@@ -207,7 +218,7 @@ void mall_generation(const RoomConfig *config, WallArr *walls, ItemArr *items,
     }
 
     if (out_grid_mask != NULL) {
-      mall_pack_grid(mall_w, mall_h, (const int *)grid, out_grid_mask);
+      mall_pack_grid(mall_w, mall_h, grid, out_grid_mask);
     }
 
     wfc_destroy(wfc);

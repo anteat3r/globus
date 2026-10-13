@@ -678,7 +678,7 @@
       </div>
 
       <!-- Raylib WebGL Canvas -->
-      <canvas id="canvas" class="emscripten" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+      <canvas id="canvas" class="emscripten" oncontextmenu="event.preventDefault()" tabindex="0"></canvas>
 
       <!-- Lobby UI Modal -->
       <div id="lobby-overlay">
@@ -763,6 +763,32 @@
           </div>
 
           <div class="modal-body">
+            <!-- 0. Game Mode & Team Selection -->
+            <div class="modal-section">
+              <div class="modal-section-title">👥 Game Mode & Player Slots</div>
+              <div class="field-grid">
+                <div class="field-group">
+                  <div class="field-label">
+                    <span>Match Format</span>
+                  </div>
+                  <select id="cfg-game-mode" class="field-select">
+                    <option value="0" selected>🏁 Free-For-All (Solo Racing)</option>
+                    <option value="1">🤝 2v2 Teams (Co-op Shopping List)</option>
+                  </select>
+                </div>
+                <div class="field-group">
+                  <div class="field-label">
+                    <span>Max Players</span>
+                  </div>
+                  <select id="cfg-max-players" class="field-select">
+                    <option value="2">2 Players (1v1)</option>
+                    <option value="3">3 Players</option>
+                    <option value="4" selected>4 Players (Up to 4 / 2v2)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
             <!-- 1. Quick Presets -->
             <div class="modal-section">
               <div class="modal-section-title">⚡ 1-Click Game Presets</div>
@@ -1288,6 +1314,8 @@
         crashImpulseMult: parseFloat(document.getElementById('cfg-crash-mult').value),
         minCrashSpeed: parseFloat(document.getElementById('cfg-min-speed').value),
         floorTheme: parseInt(document.getElementById('cfg-floor-theme').value, 10),
+        gameMode: parseInt(document.getElementById('cfg-game-mode') ? document.getElementById('cfg-game-mode').value : '0', 10),
+        maxPlayers: parseInt(document.getElementById('cfg-max-players') ? document.getElementById('cfg-max-players').value : '4', 10),
       };
     }
 
@@ -1360,20 +1388,23 @@
               } else if (data.type === 'room_created') {
                 if (window._globus_net) window._globus_net.serverRoom = data.room;
                 if (currentRoom !== data.room || currentRole !== 'host') {
-                  onRoomReady(data.room, 'host');
+                  onRoomReady(data.room, 'host', data.playerId || 1, data.teamId || 1);
                 }
               } else if (data.type === 'room_joined') {
                 if (window._globus_net) window._globus_net.serverRoom = data.room;
                 if (currentRoom !== data.room || currentRole !== 'client') {
-                  onRoomReady(data.room, 'client');
+                  onRoomReady(data.room, 'client', data.playerId || 2, data.teamId || 2);
                 }
               } else if (data.type === 'peer_joined') {
-                showToast('Opponent connected to room!');
+                const pStr = data.playerId ? `Player ${data.playerId}` : 'Peer';
+                const tStr = (data.teamId === 1) ? ' (Team Blue)' : (data.teamId === 2 ? ' (Team Red)' : '');
+                showToast(`${pStr}${tStr} joined the room! (${data.totalPlayers || 2} players)`);
                 if (currentRole === 'host' && isWasmReady) {
                   try { Module.ccall('web_peer_joined', null, [], []); } catch(e) {}
                 }
               } else if (data.type === 'peer_left') {
-                showToast('Opponent disconnected: ' + (data.reason || 'Left match'));
+                const pStr = data.playerId ? `Player ${data.playerId}` : 'Peer';
+                showToast(`${pStr} left: ` + (data.reason || 'Disconnected'));
               } else if (data.type === 'error') {
                 showToast('Error: ' + data.message);
               }
@@ -1441,6 +1472,11 @@
         const item = document.createElement('div');
         item.className = 'room-item';
         let tagsHtml = '';
+        const maxP = r.maxPlayers || (r.config && r.config.maxPlayers) || 4;
+        const count = r.players || 1;
+        const is2v2 = r.config && r.config.gameMode === 1;
+        const modeLabel = is2v2 ? '👥 2v2 Teams' : '🏁 FFA';
+
         if (r.config) {
           const c = r.config;
           const sz = `${c.mallWidth || 24}×${c.mallHeight || 24}`;
@@ -1452,14 +1488,19 @@
           else if (c.mallWidth >= 32) styleTag = '🏬 Mega';
 
           tagsHtml = `<div style="display: flex; gap: 4px; margin-top: 3px; font-size: 0.72rem; color: #94a3b8;">
+            <span style="background: #1e293b; padding: 1px 6px; border-radius: 4px; border: 1px solid #334155; color: #a78bfa;">${modeLabel}</span>
             <span style="background: #1e293b; padding: 1px 6px; border-radius: 4px; border: 1px solid #334155;">${sz}</span>
             <span style="background: #1e293b; padding: 1px 6px; border-radius: 4px; border: 1px solid #334155;">${cnt}</span>
             <span style="background: #1e293b; padding: 1px 6px; border-radius: 4px; border: 1px solid #334155; color: #60a5fa;">${styleTag}</span>
           </div>`;
+        } else {
+          tagsHtml = `<div style="display: flex; gap: 4px; margin-top: 3px; font-size: 0.72rem; color: #94a3b8;">
+            <span style="background: #1e293b; padding: 1px 6px; border-radius: 4px; border: 1px solid #334155; color: #a78bfa;">${modeLabel}</span>
+          </div>`;
         }
         item.innerHTML = `
           <div>
-            <div><span class="room-badge">ROOM ${r.id}</span> <span style="color: #64748b; font-size: 0.75rem;">(1/2 players)</span></div>
+            <div><span class="room-badge">ROOM ${r.id}</span> <span style="color: #64748b; font-size: 0.75rem;">(${count}/${maxP} players)</span></div>
             ${tagsHtml}
           </div>
           <button class="btn btn-primary" style="padding: 5px 12px; font-size: 0.8rem;" onclick="joinRoom('${r.id}')">Join</button>
@@ -1530,25 +1571,33 @@
       sendOrWait({ type: 'quick_match' });
     }
 
-    function onRoomReady(roomId, role) {
+    function onRoomReady(roomId, role, playerId, teamId) {
       if (currentRoom === roomId && currentRole === role) {
         return; // Already initialized for this room!
       }
       currentRoom = roomId;
       currentRole = role;
+      playerId = playerId || (role === 'host' ? 1 : 2);
+      teamId = teamId || (role === 'host' ? 1 : 2);
       if (window._globus_net) {
         window._globus_net.role = role;
         window._globus_net.room = roomId;
         window._globus_net.serverRoom = roomId;
+        window._globus_net.playerId = playerId;
+        window._globus_net.teamId = teamId;
       }
 
       document.getElementById('lobby-overlay').classList.add('hidden');
       document.getElementById('ingame-bar').style.display = 'flex';
-      document.getElementById('room-label').innerText = `Room: ${roomId} (${role.toUpperCase()})`;
+      const teamLabel = (teamId === 1) ? ' [Blue]' : (teamId === 2 ? ' [Red]' : '');
+      document.getElementById('room-label').innerText = `Room: ${roomId} (P${playerId}${teamLabel})`;
       document.getElementById('copy-btn').style.display = 'inline-block';
       document.getElementById('ping-display').style.display = 'flex';
 
       resizeCanvas();
+      try {
+        Module.ccall('web_set_player_info', null, ['number', 'number'], [playerId, teamId]);
+      } catch(e) {}
       if (role === 'host') {
         Module.ccall('web_start_host', null, ['string', 'string'], [roomId, '']);
       } else {
@@ -1567,14 +1616,33 @@
     function onReturnToLobby() {
       currentRoom = null;
       currentRole = null;
-      document.getElementById('lobby-overlay').classList.remove('hidden');
-      document.getElementById('ingame-bar').style.display = 'none';
-      document.getElementById('ping-display').style.display = 'none';
-      refreshRooms();
+      const overlay = document.getElementById('lobby-overlay');
+      if (overlay) overlay.classList.remove('hidden');
+      const bar = document.getElementById('ingame-bar');
+      if (bar) bar.style.display = 'none';
+      const ping = document.getElementById('ping-display');
+      if (ping) ping.style.display = 'none';
+      try { refreshRooms(); } catch(e) {}
       setTimeout(resizeCanvas, 50);
     }
 
     window.onReturnToLobby = onReturnToLobby;
+
+    window.onGameStarted = function() {
+      currentRoom = null;
+      currentRole = null;
+      const overlay = document.getElementById('lobby-overlay');
+      if (overlay) overlay.classList.add('hidden');
+      const bar = document.getElementById('ingame-bar');
+      if (bar) bar.style.display = 'flex';
+      const label = document.getElementById('room-label');
+      if (label) label.innerText = 'Solo Practice';
+      const copyBtn = document.getElementById('copy-btn');
+      if (copyBtn) copyBtn.style.display = 'none';
+      const canvasEl = document.getElementById('canvas');
+      if (canvasEl) canvasEl.focus();
+      resizeCanvas();
+    };
 
     window.onGameOver = function(winnerId, finalTime) {
       const myId = (currentRole === 'client') ? 2 : 1;
@@ -1648,8 +1716,16 @@
       }
     }
 
+    let lastFsExitTime = 0;
+    window._justExitedFs = function() {
+      return (performance.now() - lastFsExitTime) < 400;
+    };
+
     function updateFullscreenButtons() {
       const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.body.classList.contains('fullscreen-mode'));
+      if (!isFs) {
+        lastFsExitTime = performance.now();
+      }
       document.body.classList.toggle('fullscreen-mode', isFs);
       document.querySelectorAll('.fs-btn').forEach(btn => {
         btn.innerHTML = isFs ? '🗗 Exit Fullscreen' : '⛶ Fullscreen';
@@ -1691,9 +1767,23 @@
       }
     });
 
-    document.getElementById('canvas').addEventListener('dblclick', () => {
-      toggleFullscreen();
-    });
+    const canvasEl = document.getElementById('canvas');
+    if (canvasEl) {
+      canvasEl.addEventListener('click', () => canvasEl.focus());
+      canvasEl.addEventListener('pointerdown', () => canvasEl.focus());
+      canvasEl.addEventListener('dblclick', () => {
+        toggleFullscreen();
+      });
+    }
+
+    const containerEl = document.getElementById('game-container');
+    if (containerEl && canvasEl) {
+      containerEl.addEventListener('click', (e) => {
+        if (e.target === canvasEl || e.target === containerEl) {
+          canvasEl.focus();
+        }
+      });
+    }
 
     // When returning to tab from background, resync positions immediately
     document.addEventListener('visibilitychange', () => {

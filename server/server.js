@@ -46,12 +46,14 @@ const server = http.createServer((req, res) => {
     let totalPlayers = 0;
     const roomSummaries = [];
     for (const [id, room] of rooms.entries()) {
-      let count = (room.host ? 1 : 0) + (room.client ? 1 : 0);
+      let count = room.players ? room.players.length : (room.host ? 1 : 0);
+      const maxP = (room.config && room.config.maxPlayers) ? room.config.maxPlayers : 4;
       totalPlayers += count;
       roomSummaries.push({
         id,
         players: count,
-        waiting: count === 1,
+        maxPlayers: maxP,
+        waiting: count < maxP,
         config: room.config,
         createdAt: room.createdAt,
       });
@@ -68,8 +70,16 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     const available = [];
     for (const [id, room] of rooms.entries()) {
-      if (room.host && !room.client) {
-        available.push({ id, createdAt: room.createdAt, config: room.config });
+      const maxP = (room.config && room.config.maxPlayers) ? room.config.maxPlayers : 4;
+      const count = room.players ? room.players.length : 1;
+      if (room.host && count < maxP) {
+        available.push({
+          id,
+          createdAt: room.createdAt,
+          config: room.config,
+          players: count,
+          maxPlayers: maxP,
+        });
       }
     }
     return res.end(JSON.stringify({ rooms: available }));
@@ -134,18 +144,19 @@ wss.on('connection', (ws) => {
 
   ws.on('message', (data, isBinary) => {
     if (isBinary) {
-      // Forward binary game packet to peer in same room
+      // Forward binary game packet to all other peers in same room
       if (ws.room) {
         const room = rooms.get(ws.room);
-        if (room) {
-          const peer = ws.role === 'host' ? room.client : room.host;
-          if (peer && peer.readyState === WebSocket.OPEN) {
-            // Buffer bloat mitigation: if peer socket buffer is severely backlogged,
-            // drop stale position packets (header type 4 = PKT_CART_STATE) to avoid multi-second lag buildup
-            if (peer.bufferedAmount > 32768 && data && data.length > 0 && data[0] === 4) {
-              return;
+        if (room && room.players) {
+          for (const peer of room.players) {
+            if (peer && peer !== ws && peer.readyState === WebSocket.OPEN) {
+              // Buffer bloat mitigation: if peer socket buffer is severely backlogged,
+              // drop stale position packets (header type 4 = PKT_CART_STATE) to avoid lag buildup
+              if (peer.bufferedAmount > 32768 && data && data.length > 0 && data[0] === 4) {
+                continue;
+              }
+              peer.send(data, { binary: true });
             }
-            peer.send(data, { binary: true });
           }
         }
       }
@@ -199,16 +210,18 @@ function handleControlMessage(ws, msg) {
       const room = {
         id: roomId,
         host: ws,
-        client: null,
+        players: [ws],
         config: msg.config || null,
         createdAt: Date.now(),
       };
       rooms.set(roomId, room);
       ws.room = roomId;
       ws.role = 'host';
+      ws.playerId = 1;
+      ws.teamId = 1;
 
-      console.log(`[LOBBY] Room ${roomId} created by host`);
-      sendJson(ws, { type: 'room_created', room: roomId, role: 'host' });
+      console.log(`[LOBBY] Room ${roomId} created by host (Player 1, Team 1)`);
+      sendJson(ws, { type: 'room_created', room: roomId, role: 'host', playerId: 1, teamId: 1, config: room.config });
       broadcastRoomList();
       break;
     }
@@ -219,46 +232,126 @@ function handleControlMessage(ws, msg) {
         return sendJson(ws, { type: 'error', message: `Room ${roomId} does not exist` });
       }
       const room = rooms.get(roomId);
-      if (room.client === ws) {
+      if (!room.players) room.players = [room.host];
+      if (room.players.includes(ws)) {
         return;
       }
-      if (room.client && room.client.readyState === WebSocket.OPEN) {
-        return sendJson(ws, { type: 'error', message: `Room ${roomId} is already full` });
+      const maxPlayers = (room.config && room.config.maxPlayers) ? room.config.maxPlayers : 4;
+      if (room.players.length >= maxPlayers) {
+        return sendJson(ws, { type: 'error', message: `Room ${roomId} is already full (${room.players.length}/${maxPlayers} players)` });
       }
       if (!room.host || room.host.readyState !== WebSocket.OPEN) {
         return sendJson(ws, { type: 'error', message: `Room ${roomId} host is disconnected` });
       }
 
       handleLeave(ws);
-      room.client = ws;
+      room.players.push(ws);
+      const playerId = room.players.length; // 2, 3, or 4
       ws.room = roomId;
       ws.role = 'client';
+      ws.playerId = playerId;
 
-      console.log(`[LOBBY] Client joined room ${roomId}`);
-      sendJson(ws, { type: 'room_joined', room: roomId, role: 'client' });
-      sendJson(room.host, { type: 'peer_joined', role: 'client' });
+      // Determine team in 2v2:
+      let teamId = msg.teamId;
+      if (!teamId || (teamId !== 1 && teamId !== 2)) {
+        if (room.config && room.config.gameMode === 1) { // 2v2 mode
+          let t1 = 0, t2 = 0;
+          for (const p of room.players) {
+            if (p !== ws) {
+              if (p.teamId === 2) t2++; else t1++;
+            }
+          }
+          teamId = (t1 <= t2) ? 1 : 2;
+        } else {
+          teamId = playerId;
+        }
+      }
+      ws.teamId = teamId;
+
+      console.log(`[LOBBY] Player ${playerId} (Team ${teamId}) joined room ${roomId} (${room.players.length}/${maxPlayers})`);
+      sendJson(ws, {
+        type: 'room_joined',
+        room: roomId,
+        role: 'client',
+        playerId: playerId,
+        teamId: teamId,
+        config: room.config,
+        totalPlayers: room.players.length,
+      });
+
+      // Notify all other players in the room
+      for (const peer of room.players) {
+        if (peer !== ws && peer.readyState === WebSocket.OPEN) {
+          sendJson(peer, {
+            type: 'peer_joined',
+            role: 'client',
+            playerId: playerId,
+            teamId: teamId,
+            totalPlayers: room.players.length,
+          });
+        }
+      }
       broadcastRoomList();
       break;
     }
 
     case 'quick_match': {
       handleLeave(ws);
-      // Find open room waiting for client
+      // Find open room waiting for players
       let targetRoom = null;
       for (const [id, r] of rooms.entries()) {
-        if (r.host && r.host.readyState === WebSocket.OPEN && (!r.client || r.client.readyState !== WebSocket.OPEN)) {
+        const maxP = (r.config && r.config.maxPlayers) ? r.config.maxPlayers : 4;
+        const count = r.players ? r.players.length : 1;
+        if (r.host && r.host.readyState === WebSocket.OPEN && count < maxP) {
           targetRoom = r;
           break;
         }
       }
 
       if (targetRoom) {
-        targetRoom.client = ws;
+        if (!targetRoom.players) targetRoom.players = [targetRoom.host];
+        targetRoom.players.push(ws);
+        const playerId = targetRoom.players.length;
         ws.room = targetRoom.id;
         ws.role = 'client';
-        console.log(`[LOBBY] Quick match: joined existing room ${targetRoom.id}`);
-        sendJson(ws, { type: 'room_joined', room: targetRoom.id, role: 'client' });
-        sendJson(targetRoom.host, { type: 'peer_joined', role: 'client' });
+        ws.playerId = playerId;
+
+        let teamId = 1;
+        if (targetRoom.config && targetRoom.config.gameMode === 1) {
+          let t1 = 0, t2 = 0;
+          for (const p of targetRoom.players) {
+            if (p !== ws) {
+              if (p.teamId === 2) t2++; else t1++;
+            }
+          }
+          teamId = (t1 <= t2) ? 1 : 2;
+        } else {
+          teamId = playerId;
+        }
+        ws.teamId = teamId;
+
+        console.log(`[LOBBY] Quick match: Player ${playerId} (Team ${teamId}) joined room ${targetRoom.id}`);
+        sendJson(ws, {
+          type: 'room_joined',
+          room: targetRoom.id,
+          role: 'client',
+          playerId: playerId,
+          teamId: teamId,
+          config: targetRoom.config,
+          totalPlayers: targetRoom.players.length,
+        });
+
+        for (const peer of targetRoom.players) {
+          if (peer !== ws && peer.readyState === WebSocket.OPEN) {
+            sendJson(peer, {
+              type: 'peer_joined',
+              role: 'client',
+              playerId: playerId,
+              teamId: teamId,
+              totalPlayers: targetRoom.players.length,
+            });
+          }
+        }
       } else {
         // Create new room as host
         let roomId = generateRoomId();
@@ -268,15 +361,17 @@ function handleControlMessage(ws, msg) {
         const room = {
           id: roomId,
           host: ws,
-          client: null,
+          players: [ws],
           config: msg.config || null,
           createdAt: Date.now(),
         };
         rooms.set(roomId, room);
         ws.room = roomId;
         ws.role = 'host';
+        ws.playerId = 1;
+        ws.teamId = 1;
         console.log(`[LOBBY] Quick match: created room ${roomId}`);
-        sendJson(ws, { type: 'room_created', room: roomId, role: 'host' });
+        sendJson(ws, { type: 'room_created', room: roomId, role: 'host', playerId: 1, teamId: 1, config: room.config });
       }
       broadcastRoomList();
       break;
@@ -313,19 +408,47 @@ function handleLeave(ws, reason = 'Player left') {
     return;
   }
 
-  console.log(`[LOBBY] ${ws.role} left room ${ws.room}: ${reason}`);
+  console.log(`[LOBBY] Player ${ws.playerId || ws.role} left room ${ws.room}: ${reason}`);
+
+  if (room.players) {
+    const idx = room.players.indexOf(ws);
+    if (idx !== -1) {
+      room.players.splice(idx, 1);
+    }
+  }
 
   if (ws.role === 'host') {
-    if (room.client && room.client.readyState === WebSocket.OPEN) {
-      sendJson(room.client, { type: 'peer_left', reason: 'Host closed room' });
-      room.client.room = null;
-      room.client.role = null;
+    if (room.players && room.players.length > 0) {
+      // Promote next player to host
+      room.host = room.players[0];
+      room.host.role = 'host';
+      sendJson(room.host, { type: 'promoted_to_host', playerId: room.host.playerId || 1 });
+      for (const peer of room.players) {
+        if (peer.readyState === WebSocket.OPEN) {
+          sendJson(peer, {
+            type: 'peer_left',
+            playerId: ws.playerId || 1,
+            reason: 'Host left, new host promoted',
+            totalPlayers: room.players.length,
+          });
+        }
+      }
+    } else {
+      rooms.delete(ws.room);
+      console.log(`[LOBBY] Room ${ws.room} deleted (empty)`);
     }
-    rooms.delete(ws.room);
-  } else if (ws.role === 'client') {
-    room.client = null;
-    if (room.host && room.host.readyState === WebSocket.OPEN) {
-      sendJson(room.host, { type: 'peer_left', reason: 'Client disconnected' });
+  } else {
+    if (room.players) {
+      for (const peer of room.players) {
+        if (peer.readyState === WebSocket.OPEN) {
+          sendJson(peer, {
+            type: 'peer_left',
+            playerId: ws.playerId || 2,
+            reason: reason || 'Player disconnected',
+            totalPlayers: room.players.length,
+          });
+        }
+      }
     }
   }
 
@@ -342,8 +465,16 @@ function sendJson(ws, obj) {
 function sendRoomList(targetWs) {
   const available = [];
   for (const [id, room] of rooms.entries()) {
-    if (room.host && (!room.client || room.client.readyState !== WebSocket.OPEN)) {
-      available.push({ id, createdAt: room.createdAt, config: room.config });
+    const maxP = (room.config && room.config.maxPlayers) ? room.config.maxPlayers : 4;
+    const count = room.players ? room.players.length : 1;
+    if (room.host && count < maxP) {
+      available.push({
+        id,
+        createdAt: room.createdAt,
+        config: room.config,
+        players: count,
+        maxPlayers: maxP,
+      });
     }
   }
   sendJson(targetWs, { type: 'room_list', rooms: available });
@@ -352,8 +483,16 @@ function sendRoomList(targetWs) {
 function broadcastRoomList() {
   const available = [];
   for (const [id, room] of rooms.entries()) {
-    if (room.host && (!room.client || room.client.readyState !== WebSocket.OPEN)) {
-      available.push({ id, createdAt: room.createdAt, config: room.config });
+    const maxP = (room.config && room.config.maxPlayers) ? room.config.maxPlayers : 4;
+    const count = room.players ? room.players.length : 1;
+    if (room.host && count < maxP) {
+      available.push({
+        id,
+        createdAt: room.createdAt,
+        config: room.config,
+        players: count,
+        maxPlayers: maxP,
+      });
     }
   }
   const payload = JSON.stringify({ type: 'room_list', rooms: available });

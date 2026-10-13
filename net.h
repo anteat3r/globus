@@ -41,9 +41,13 @@ typedef struct {
   uint8_t type;
 } PktHeader;
 
+#define MAX_NET_PLAYERS 4
+
 typedef struct {
   PktHeader header;
   char player_name[16];
+  uint8_t player_id;
+  uint8_t team_id;
 } PktHello;
 
 #define NET_GRID_MASK_SIZE MALL_GRID_MASK_SIZE
@@ -55,6 +59,8 @@ typedef struct {
   uint8_t shopping_list_count;
   int16_t shopping_list[SHOPPING_LIST_MAX_LEN];
   uint8_t grid_mask[NET_GRID_MASK_SIZE];
+  uint8_t active_players_mask; // Bitmask of active players (bit 0 = P1, bit 1 = P2, etc.)
+  uint8_t player_teams[MAX_NET_PLAYERS]; // Team ID for each player (1 or 2)
 } PktInit;
 
 typedef struct {
@@ -74,6 +80,7 @@ typedef struct {
   float pick_pos_x;
   float pick_pos_y;
   float mass;
+  uint8_t player_id; // 1..4
 } PktCartState;
 
 typedef struct {
@@ -100,6 +107,7 @@ typedef struct {
   PktHeader header;
   uint8_t winner_id;
   float final_time;
+  uint8_t winning_team; // 0=FFA, 1=Team 1, 2=Team 2
 } PktGameOver;
 
 typedef struct {
@@ -115,6 +123,8 @@ typedef struct {
   int32_t p2_dropped_texture_id;
   float p2_drop_x;
   float p2_drop_y;
+  uint8_t p1_id; // 1..4
+  uint8_t p2_id; // 1..4
 } PktCollisionEvent;
 
 #pragma pack(pop)
@@ -160,15 +170,23 @@ bool net_send(const void *data, size_t size);
 int net_poll(NetPacket *pkt);
 
 void net_send_hello(void);
+void net_send_hello_multi(const char *name, uint8_t player_id, uint8_t team_id);
 void net_send_init(uint32_t seed, const RoomConfig *config, const int *slist,
                    int slist_len, const uint8_t *grid_mask);
+void net_send_init_multi(uint32_t seed, const RoomConfig *config, const int *slist,
+                         int slist_len, const uint8_t *grid_mask,
+                         uint8_t active_players_mask, const uint8_t *player_teams);
 void net_send_ready(void);
 void net_send_cart_state(Vector2 pos, Vector2 vel, float rot, float ang_vel,
                          int pick_side, Vector2 pick_pos, float mass);
+void net_send_cart_state_multi(Vector2 pos, Vector2 vel, float rot, float ang_vel,
+                               int pick_side, Vector2 pick_pos, float mass,
+                               uint8_t player_id);
 void net_send_item_pick(int texture_id, Vector2 pos, int player_id);
 void net_send_ping(void);
 void net_send_bump(Vector2 impulse, float ang_impulse);
 void net_send_game_over(uint8_t winner_id, float final_time);
+void net_send_game_over_multi(uint8_t winner_id, float final_time, uint8_t winning_team);
 void net_send_collision_event(const PktCollisionEvent *event);
 
 #endif // NET_H

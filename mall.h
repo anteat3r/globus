@@ -47,9 +47,18 @@ typedef struct {
 
   // Visuals
   uint8_t floor_theme;          // 0=Classic, 1=Warm Terrazzo, 2=Midnight Cyber, 3=Fresh Mint
+
+  // Multi-cart & Teams
+  uint8_t game_mode;            // 0=FFA, 1=2v2 Teams (default: 0)
+  uint8_t max_players;          // 2..4 (default: 4)
 } RoomConfig;
 
 #pragma pack(pop)
+
+enum {
+  GAME_MODE_FFA = 0,
+  GAME_MODE_2V2 = 1,
+};
 
 extern RoomConfig g_config;
 RoomConfig room_config_default(void);
@@ -121,8 +130,8 @@ void island_shelfarr_push_line(IslandShelfArr *shelves, Vector2 start,
 void island_shelfarr_draw(IslandShelfArr shelves, Vector2 topleft,
                           Vector2 botright);
 
-void mall_pack_grid(int w, int h, const int *grid, uint8_t *mask);
-void mall_unpack_grid(int w, int h, const uint8_t *mask, int *grid);
+void mall_pack_grid(int w, int h, const int grid[MALL_MAX_HEIGHT][MALL_MAX_WIDTH], uint8_t *mask);
+void mall_unpack_grid(int w, int h, const uint8_t *mask, int grid[MALL_MAX_HEIGHT][MALL_MAX_WIDTH]);
 
 void mall_generation(const RoomConfig *config, WallArr *walls, ItemArr *items,
                      IslandPosterArr *posters, IslandShelfArr *shelves,

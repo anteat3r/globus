@@ -57,6 +57,7 @@ void cart_free(Cart *cart);
 
 ColliPoly cart_get_world_collider(const Cart *cart);
 void cart_recalculate_mass_inertia(Cart *cart);
+void cart_set_mass(Cart *cart, float base_mass);
 
 void cart_apply_force(Cart *cart, Vector2 rel_pos, Vector2 force, float delta);
 void cart_apply_force_rotated(Cart *cart, Vector2 rel_pos, Vector2 force,

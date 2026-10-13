@@ -23,19 +23,145 @@ typedef enum {
 } AppState;
 
 static AppState g_app_state = APP_STATE_PLAYING;
-static bool g_main_cart_init = false;
-static bool g_remote_cart_init = false;
+#define MAX_PLAYERS 4
 
-static Cart main_cart;
-static Cart remote_cart;
+typedef struct {
+  Cart cart;
+  bool active;
+  bool initialized;
+  uint8_t player_id; // 1..4
+  uint8_t team_id;   // 1 or 2 (in 2v2: P1,P2 = 1, P3,P4 = 2; in FFA: team_id = player_id)
+  Vector2 target_pos;
+  Vector2 target_vel;
+  float target_rot;
+  float target_ang_vel;
+  int pick_side;
+  Vector2 pick_target;
+  float last_packet_time;
+  ShoppingList shopping_list;
+  char name[16];
+} PlayerSlot;
+
+static PlayerSlot g_players[MAX_PLAYERS];
+static int g_local_player_id = 1; // 1..4
+#define main_cart (g_players[g_local_player_id - 1].cart)
+
+// 2v2 team shopping lists (index 1 = Team 1 [Blue], index 2 = Team 2 [Red])
+static ShoppingList team_shopping_lists[3] = {0};
+
+static bool any_remote_player_active(void) {
+  for (int i = 0; i < MAX_PLAYERS; i++) {
+    if (i != g_local_player_id - 1 && g_players[i].active) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static ShoppingList *get_player_shopping_list(int player_id) {
+  if (player_id < 1 || player_id > MAX_PLAYERS) player_id = 1;
+  if (g_config.game_mode == GAME_MODE_2V2) {
+    int team = g_players[player_id - 1].team_id;
+    if (team < 1 || team > 2) team = (player_id <= 2 ? 1 : 2);
+    return &team_shopping_lists[team];
+  } else {
+    return &g_players[player_id - 1].shopping_list;
+  }
+}
+
+// Colors for FFA mode (distinct for all 4 players)
+static const Color PLAYER_OUTLINE_COLORS[MAX_PLAYERS] = {
+    DARKBLUE,                  // P1: Blue outline
+    MAROON,                    // P2: Red outline
+    DARKGREEN,                 // P3: Green outline
+    (Color){180, 100, 0, 255}, // P4: Gold outline
+};
+
+static const Color PLAYER_BODY_COLORS[MAX_PLAYERS] = {
+    BLUE,  // P1: Royal Blue
+    RED,   // P2: Crimson Red
+    LIME,  // P3: Green
+    GOLD,  // P4: Yellow/Gold
+};
+
+// Colors for 2v2 mode: Team 1 = Shades of Blue, Team 2 = Shades of Red/Orange
+static const Color TEAM_BODY_COLORS[MAX_PLAYERS] = {
+    (Color){37, 99, 235, 255},  // P1: Royal Blue (Team 1)
+    (Color){56, 189, 248, 255}, // P2: Sky Blue (Team 1)
+    (Color){220, 38, 38, 255},  // P3: Crimson Red (Team 2)
+    (Color){251, 146, 60, 255}, // P4: Coral Orange (Team 2)
+};
+
+static const Color TEAM_OUTLINE_COLORS[MAX_PLAYERS] = {
+    DARKBLUE,
+    (Color){3, 105, 161, 255},
+    MAROON,
+    (Color){194, 65, 12, 255},
+};
+
+static Vector2 get_spawn_pos(int player_id, float cx, float cy) {
+  int max_p = (g_config.max_players >= 2 && g_config.max_players <= 4) ? g_config.max_players : 4;
+  if (g_config.game_mode == GAME_MODE_2V2 || max_p > 2) {
+    switch (player_id) {
+      case 1: return (Vector2){cx - 0.9f, cy - 0.5f};
+      case 2: return (Vector2){cx - 0.9f, cy + 0.5f};
+      case 3: return (Vector2){cx + 0.9f, cy - 0.5f};
+      case 4: return (Vector2){cx + 0.9f, cy + 0.5f};
+      default: return (Vector2){cx, cy};
+    }
+  } else {
+    // 1v1
+    if (player_id == 1) return (Vector2){cx - 0.6f, cy};
+    else return (Vector2){cx + 0.6f, cy};
+  }
+}
+
+static void init_player_cart(int player_id, float cx, float cy) {
+  if (player_id < 1 || player_id > MAX_PLAYERS) return;
+  int idx = player_id - 1;
+  Color outline, body;
+  if (g_config.game_mode == GAME_MODE_2V2) {
+    outline = TEAM_OUTLINE_COLORS[idx];
+    body = TEAM_BODY_COLORS[idx];
+  } else {
+    outline = PLAYER_OUTLINE_COLORS[idx];
+    body = PLAYER_BODY_COLORS[idx];
+  }
+
+  if (g_players[idx].initialized) {
+    cart_free(&g_players[idx].cart);
+    g_players[idx].initialized = false;
+  }
+
+  g_players[idx].cart = cart_new_goofy(
+      outline, body, DARKGRAY, Vector2Zero(), 4,
+      (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
+      (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
+  cart_set_mass(&g_players[idx].cart, g_config.cart_mass);
+
+  Vector2 spawn = get_spawn_pos(player_id, cx, cy);
+  g_players[idx].cart.pos = spawn;
+  g_players[idx].cart.vel = Vector2Zero();
+  g_players[idx].cart.rot = (player_id > 2 || (g_config.game_mode == GAME_MODE_2V2 && player_id > 2)) ? PI : 0.0f;
+  g_players[idx].cart.ang_vel = 0.0f;
+  g_players[idx].target_pos = spawn;
+  g_players[idx].target_vel = Vector2Zero();
+  g_players[idx].target_rot = g_players[idx].cart.rot;
+  g_players[idx].target_ang_vel = 0.0f;
+  g_players[idx].pick_side = -1;
+  g_players[idx].pick_target = Vector2Zero();
+  g_players[idx].last_packet_time = (float)GetTime();
+  g_players[idx].player_id = (uint8_t)player_id;
+  if (g_config.game_mode == GAME_MODE_2V2) {
+    g_players[idx].team_id = (player_id <= 2) ? 1 : 2;
+  } else {
+    g_players[idx].team_id = (uint8_t)player_id;
+  }
+  snprintf(g_players[idx].name, sizeof(g_players[idx].name), "Player %d", player_id);
+  g_players[idx].initialized = true;
+}
+
 static bool has_remote_cart = false;
-static int remote_pick_side = -1;
-static Vector2 remote_pick_pos = {0};
-static Vector2 remote_target_pos;
-static Vector2 remote_target_vel;
-static float remote_target_rot = 0.0f;
-static float remote_target_ang_vel = 0.0f;
-static float remote_last_packet_time = 0.0f;
 static float last_cart_state_send_time = 0.0f;
 static int last_sent_pick_side = -1;
 
@@ -119,6 +245,10 @@ static void room_config_from_json(const char *json, RoomConfig *cfg) {
   cfg->crash_impulse_mult = json_find_float(json, "crashImpulseMult", cfg->crash_impulse_mult);
   cfg->min_crash_speed = json_find_float(json, "minCrashSpeed", cfg->min_crash_speed);
   cfg->floor_theme = (uint8_t)json_find_int(json, "floorTheme", cfg->floor_theme);
+  cfg->game_mode = (uint8_t)json_find_int(json, "gameMode", cfg->game_mode);
+  cfg->max_players = (uint8_t)json_find_int(json, "maxPlayers", cfg->max_players);
+  if (cfg->max_players < 2) cfg->max_players = 2;
+  if (cfg->max_players > 4) cfg->max_players = 4;
 
   if (cfg->mall_width < MALL_MIN_DIM) cfg->mall_width = MALL_MIN_DIM;
   if (cfg->mall_width > MALL_MAX_WIDTH) cfg->mall_width = MALL_MAX_WIDTH;
@@ -269,9 +399,13 @@ static float LerpAngle(float a, float b, float t) {
 }
 
 static void sync_local_shopping_list(void) {
-  shopping_list_len = local_shopping_list.len;
-  for (int i = 0; i < local_shopping_list.len; i++) {
-    shopping_list[i] = local_shopping_list.items[i];
+  ShoppingList *my_list = get_player_shopping_list(g_local_player_id);
+  local_shopping_list.len = my_list->len;
+  local_shopping_list.initial_len = my_list->initial_len;
+  shopping_list_len = my_list->len;
+  for (int i = 0; i < my_list->len; i++) {
+    shopping_list[i] = my_list->items[i];
+    local_shopping_list.items[i] = my_list->items[i];
   }
 }
 
@@ -297,16 +431,32 @@ static void init_game_world(uint32_t seed, const uint8_t *in_grid_mask) {
 
   if (in_grid_mask == NULL) {
     fill_shopping_list();
+    for (int t = 1; t <= 2; t++) {
+      team_shopping_lists[t].len = shopping_list_len;
+      team_shopping_lists[t].initial_len = shopping_list_len;
+      for (int i = 0; i < shopping_list_len; i++) {
+        team_shopping_lists[t].items[i] = shopping_list[i];
+        team_shopping_lists[t].initial_items[i] = shopping_list[i];
+      }
+    }
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+      g_players[p].shopping_list.len = shopping_list_len;
+      g_players[p].shopping_list.initial_len = shopping_list_len;
+      for (int i = 0; i < shopping_list_len; i++) {
+        g_players[p].shopping_list.items[i] = shopping_list[i];
+        g_players[p].shopping_list.initial_items[i] = shopping_list[i];
+      }
+    }
     local_shopping_list.len = shopping_list_len;
     local_shopping_list.initial_len = shopping_list_len;
+    remote_shopping_list.len = shopping_list_len;
+    remote_shopping_list.initial_len = shopping_list_len;
     for (int i = 0; i < shopping_list_len; i++) {
       local_shopping_list.items[i] = shopping_list[i];
       local_shopping_list.initial_items[i] = shopping_list[i];
       remote_shopping_list.items[i] = shopping_list[i];
       remote_shopping_list.initial_items[i] = shopping_list[i];
     }
-    remote_shopping_list.len = shopping_list_len;
-    remote_shopping_list.initial_len = shopping_list_len;
   }
   winner = 0;
   winning_time = 0.0f;
@@ -327,15 +477,33 @@ static void apply_remote_shopping_list(const PktInit *init) {
   shopping_list_len = init->shopping_list_count;
   for (int i = 0; i < shopping_list_len && i < SHOPPING_LIST_MAX_LEN; i++) {
     shopping_list[i] = init->shopping_list[i];
-    local_shopping_list.items[i] = init->shopping_list[i];
-    local_shopping_list.initial_items[i] = init->shopping_list[i];
-    remote_shopping_list.items[i] = init->shopping_list[i];
-    remote_shopping_list.initial_items[i] = init->shopping_list[i];
+  }
+  for (int t = 1; t <= 2; t++) {
+    team_shopping_lists[t].len = shopping_list_len;
+    team_shopping_lists[t].initial_len = shopping_list_len;
+    for (int i = 0; i < shopping_list_len; i++) {
+      team_shopping_lists[t].items[i] = shopping_list[i];
+      team_shopping_lists[t].initial_items[i] = shopping_list[i];
+    }
+  }
+  for (int p = 0; p < MAX_PLAYERS; p++) {
+    g_players[p].shopping_list.len = shopping_list_len;
+    g_players[p].shopping_list.initial_len = shopping_list_len;
+    for (int i = 0; i < shopping_list_len; i++) {
+      g_players[p].shopping_list.items[i] = shopping_list[i];
+      g_players[p].shopping_list.initial_items[i] = shopping_list[i];
+    }
   }
   local_shopping_list.len = shopping_list_len;
   local_shopping_list.initial_len = shopping_list_len;
   remote_shopping_list.len = shopping_list_len;
   remote_shopping_list.initial_len = shopping_list_len;
+  for (int i = 0; i < shopping_list_len; i++) {
+    local_shopping_list.items[i] = shopping_list[i];
+    local_shopping_list.initial_items[i] = shopping_list[i];
+    remote_shopping_list.items[i] = shopping_list[i];
+    remote_shopping_list.initial_items[i] = shopping_list[i];
+  }
   winner = 0;
   winning_time = 0.0f;
   race_start_time = 0.0f;
@@ -354,28 +522,24 @@ static void cleanup_game_world(void) {
     island_posterarr_free(&posters);
     itemarr_free_all(&items);
     wallarr_free_all(&walls);
-    if (g_main_cart_init) {
-      itemarr_free_all(&main_cart.items);
-      main_cart.mass = main_cart.base_mass;
-      main_cart.mom_inertia = main_cart.base_mom_inertia;
-    }
-    if (g_remote_cart_init && g_net.mode != NET_MODE_SINGLE) {
-      itemarr_free_all(&remote_cart.items);
-      remote_cart.mass = remote_cart.base_mass;
-      remote_cart.mom_inertia = remote_cart.base_mom_inertia;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+      if (g_players[i].initialized) {
+        itemarr_free_all(&g_players[i].cart.items);
+        g_players[i].cart.mass = g_players[i].cart.base_mass;
+        g_players[i].cart.mom_inertia = g_players[i].cart.base_mom_inertia;
+      }
     }
     world_initialized = false;
   }
 }
 
 static void free_carts(void) {
-  if (g_main_cart_init) {
-    cart_free(&main_cart);
-    g_main_cart_init = false;
-  }
-  if (g_remote_cart_init) {
-    cart_free(&remote_cart);
-    g_remote_cart_init = false;
+  for (int i = 0; i < MAX_PLAYERS; i++) {
+    if (g_players[i].initialized) {
+      cart_free(&g_players[i].cart);
+      g_players[i].initialized = false;
+      g_players[i].active = false;
+    }
   }
 }
 
@@ -384,21 +548,27 @@ static void start_singleplayer(void) {
   free_carts();
   net_close();
   g_net.mode = NET_MODE_SINGLE;
+  if (g_local_player_id < 1 || g_local_player_id > MAX_PLAYERS) {
+    g_local_player_id = 1;
+  }
   has_remote_cart = false;
 
   float cx = (float)((g_config.mall_width > 0 ? g_config.mall_width : 24) / 2);
   float cy = (float)((g_config.mall_height > 0 ? g_config.mall_height : 24) / 2);
-  float density = 4.0f * ((g_config.cart_mass > 0.0f ? g_config.cart_mass : 35.0f) / 35.0f);
 
-  main_cart =
-      cart_new_goofy(DARKBLUE, BLUE, BLACK, Vector2Zero(), density,
-                     (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
-                     (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
-  main_cart.pos = (Vector2){cx, cy};
-  g_main_cart_init = true;
+  for (int i = 1; i <= MAX_PLAYERS; i++) {
+    init_player_cart(i, cx, cy);
+  }
+  g_players[g_local_player_id - 1].active = true;
+  g_players[g_local_player_id - 1].cart.pos = get_spawn_pos(g_local_player_id, cx, cy);
 
   init_game_world((uint32_t)time(NULL), NULL);
   g_app_state = APP_STATE_PLAYING;
+#if defined(__EMSCRIPTEN__)
+  EM_ASM({
+    if (window.onGameStarted) window.onGameStarted();
+  });
+#endif
 }
 
 static void start_host(const char *room_code, const char *ws_url, int port) {
@@ -415,30 +585,12 @@ static void start_host(const char *room_code, const char *ws_url, int port) {
 
   float cx = (float)((g_config.mall_width > 0 ? g_config.mall_width : 24) / 2);
   float cy = (float)((g_config.mall_height > 0 ? g_config.mall_height : 24) / 2);
-  float density = 4.0f * ((g_config.cart_mass > 0.0f ? g_config.cart_mass : 35.0f) / 35.0f);
 
-  // Player 1 (Blue)
-  main_cart =
-      cart_new_goofy(DARKBLUE, BLUE, BLACK, Vector2Zero(), density,
-                     (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
-                     (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
-  main_cart.pos = (Vector2){cx - 0.5f, cy};
-  g_main_cart_init = true;
-
-  // Player 2 (Red)
-  remote_cart =
-      cart_new_goofy(MAROON, RED, DARKGRAY, Vector2Zero(), density,
-                     (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
-                     (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
-  remote_cart.pos = (Vector2){cx + 0.5f, cy};
-  remote_target_pos = remote_cart.pos;
-  remote_target_vel = Vector2Zero();
-  remote_target_rot = 0.0f;
-  remote_target_ang_vel = 0.0f;
-  remote_last_packet_time = (float)GetTime();
-  last_cart_state_send_time = 0.0f;
-  last_sent_pick_side = -1;
-  g_remote_cart_init = true;
+  g_local_player_id = 1;
+  for (int i = 1; i <= MAX_PLAYERS; i++) {
+    init_player_cart(i, cx, cy);
+  }
+  g_players[0].active = true;
   has_remote_cart = false;
 
   init_game_world((uint32_t)time(NULL), NULL);
@@ -458,34 +610,20 @@ static void start_client(const char *join_ip_or_room, const char *ws_url, int po
 
   float cx = (float)((g_config.mall_width > 0 ? g_config.mall_width : 24) / 2);
   float cy = (float)((g_config.mall_height > 0 ? g_config.mall_height : 24) / 2);
-  float density = 4.0f * ((g_config.cart_mass > 0.0f ? g_config.cart_mass : 35.0f) / 35.0f);
 
-  // Local player is Player 2 (Red)
-  main_cart =
-      cart_new_goofy(MAROON, RED, DARKGRAY, Vector2Zero(), density,
-                     (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
-                     (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
-  main_cart.pos = (Vector2){cx + 0.5f, cy};
-  g_main_cart_init = true;
-
-  // Remote player is Player 1 (Blue)
-  remote_cart =
-      cart_new_goofy(DARKBLUE, BLUE, BLACK, Vector2Zero(), density,
-                     (Vector2){-0.15f, -0.27f}, (Vector2){-0.25f, 0.27f},
-                     (Vector2){0.25f, 0.27f}, (Vector2){0.15f, -0.27f});
-  remote_cart.pos = (Vector2){cx - 0.5f, cy};
-  remote_target_pos = remote_cart.pos;
-  remote_target_vel = Vector2Zero();
-  remote_target_rot = 0.0f;
-  remote_target_ang_vel = 0.0f;
-  remote_last_packet_time = (float)GetTime();
-  last_cart_state_send_time = 0.0f;
-  last_sent_pick_side = -1;
-  g_remote_cart_init = true;
+  if (g_local_player_id < 1 || g_local_player_id > MAX_PLAYERS) {
+    g_local_player_id = 2;
+  }
+  for (int i = 1; i <= MAX_PLAYERS; i++) {
+    init_player_cart(i, cx, cy);
+  }
+  g_players[g_local_player_id - 1].active = true;
   has_remote_cart = false;
 
   g_app_state = APP_STATE_PLAYING;
-  net_send_hello();
+  net_send_hello_multi(g_players[g_local_player_id - 1].name,
+                       (uint8_t)g_local_player_id,
+                       g_players[g_local_player_id - 1].team_id);
   g_net.last_send_time = (float)GetTime();
 }
 
@@ -554,20 +692,40 @@ void web_set_room_config_json(const char *json_str) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+void web_set_player_info(int player_id, int team_id) {
+  if (player_id >= 1 && player_id <= MAX_PLAYERS) {
+    g_local_player_id = player_id;
+  }
+  if (g_local_player_id >= 1 && g_local_player_id <= MAX_PLAYERS) {
+    if (team_id == 1 || team_id == 2) {
+      g_players[g_local_player_id - 1].team_id = (uint8_t)team_id;
+    }
+  }
+}
+
+EMSCRIPTEN_KEEPALIVE
 void web_peer_joined(void) {
   if (g_net.mode == NET_MODE_HOST && world_initialized) {
-    net_send_init(net_seed, &g_config, shopping_list, shopping_list_len, host_grid_mask);
+    uint8_t mask = 0;
+    uint8_t teams[MAX_NET_PLAYERS];
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+      if (g_players[i].active) mask |= (uint8_t)(1 << i);
+      teams[i] = g_players[i].team_id;
+    }
+    net_send_init_multi(net_seed, &g_config, shopping_list, shopping_list_len, host_grid_mask, mask, teams);
     g_net.state = NET_STATE_CONNECTING;
   }
 }
 
 EMSCRIPTEN_KEEPALIVE
 void web_tab_resumed(void) {
-  if (has_remote_cart) {
-    remote_cart.pos = remote_target_pos;
-    remote_cart.rot = remote_target_rot;
-    remote_cart.vel = remote_target_vel;
-    remote_cart.ang_vel = remote_target_ang_vel;
+  for (int i = 0; i < MAX_PLAYERS; i++) {
+    if (i != g_local_player_id - 1 && g_players[i].active) {
+      g_players[i].cart.pos = g_players[i].target_pos;
+      g_players[i].cart.rot = g_players[i].target_rot;
+      g_players[i].cart.vel = g_players[i].target_vel;
+      g_players[i].cart.ang_vel = g_players[i].target_ang_vel;
+    }
   }
 }
 #endif
@@ -577,79 +735,124 @@ static void restart_match(void) {
   float cy = (float)((g_config.mall_height > 0 ? g_config.mall_height : 24) / 2);
   if (g_net.mode == NET_MODE_SINGLE) {
     cleanup_game_world();
-    main_cart.pos = (Vector2){cx, cy};
-    main_cart.vel = Vector2Zero();
-    main_cart.rot = 0.0f;
-    main_cart.ang_vel = 0.0f;
+    g_players[0].cart.pos = (Vector2){cx, cy};
+    g_players[0].cart.vel = Vector2Zero();
+    g_players[0].cart.rot = 0.0f;
+    g_players[0].cart.ang_vel = 0.0f;
     init_game_world((uint32_t)time(NULL), NULL);
   } else if (g_net.mode == NET_MODE_HOST) {
     cleanup_game_world();
-    main_cart.pos = (Vector2){cx - 0.5f, cy};
-    main_cart.vel = Vector2Zero();
-    main_cart.rot = 0.0f;
-    main_cart.ang_vel = 0.0f;
-    remote_cart.pos = (Vector2){cx + 0.5f, cy};
-    remote_cart.vel = Vector2Zero();
-    remote_cart.rot = 0.0f;
-    remote_cart.ang_vel = 0.0f;
-    remote_target_pos = remote_cart.pos;
-    remote_target_vel = Vector2Zero();
-    remote_target_rot = 0.0f;
-    remote_target_ang_vel = 0.0f;
-    remote_last_packet_time = (float)GetTime();
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+      Vector2 sp = get_spawn_pos(i + 1, cx, cy);
+      g_players[i].cart.pos = sp;
+      g_players[i].cart.vel = Vector2Zero();
+      g_players[i].cart.rot = (i >= 2 || (g_config.game_mode == GAME_MODE_2V2 && g_players[i].team_id == 2)) ? PI : 0.0f;
+      g_players[i].cart.ang_vel = 0.0f;
+      g_players[i].target_pos = sp;
+      g_players[i].target_vel = Vector2Zero();
+      g_players[i].target_rot = g_players[i].cart.rot;
+      g_players[i].target_ang_vel = 0.0f;
+      g_players[i].pick_side = -1;
+      g_players[i].pick_target = Vector2Zero();
+      g_players[i].last_packet_time = (float)GetTime();
+    }
     last_cart_state_send_time = 0.0f;
     last_sent_pick_side = -1;
-    remote_pick_side = -1;
 
     uint32_t new_seed = (uint32_t)time(NULL);
     init_game_world(new_seed, NULL);
     if (g_net.state == NET_STATE_CONNECTED) {
-      net_send_init(new_seed, &g_config, shopping_list, shopping_list_len, host_grid_mask);
+      uint8_t mask = 0;
+      uint8_t teams[MAX_NET_PLAYERS];
+      for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (g_players[i].active) mask |= (uint8_t)(1 << i);
+        teams[i] = g_players[i].team_id;
+      }
+      net_send_init_multi(new_seed, &g_config, shopping_list, shopping_list_len, host_grid_mask, mask, teams);
     }
   } else if (g_net.mode == NET_MODE_CLIENT) {
     rematch_requested = true;
-    net_send_hello();
+    net_send_hello_multi(g_players[g_local_player_id - 1].name,
+                         (uint8_t)g_local_player_id,
+                         g_players[g_local_player_id - 1].team_id);
   }
 }
 
-static void handle_host_cart_collision(float p1_speed, float p2_speed,
+static void handle_host_cart_collision(int p1_id, int p2_id,
                                        Vector2 bump_impulse, float bump_ang) {
   float now = (float)GetTime();
-  if (now - last_collision_time < 0.5f || winner != 0) {
+  if (now - last_collision_time < 0.35f || winner != 0) {
     return;
   }
   last_collision_time = now;
 
-  // Determine faster player: 1 = Host (Blue), 2 = Client (Red), 0 = Equal
+  int idx1 = p1_id - 1;
+  int idx2 = p2_id - 1;
+  Cart *c1 = &g_players[idx1].cart;
+  Cart *c2 = &g_players[idx2].cart;
+
+  bool same_team = (g_config.game_mode == GAME_MODE_2V2 &&
+                    g_players[idx1].team_id == g_players[idx2].team_id);
+
+  float bump_mult = (g_config.crash_impulse_mult > 0.0f) ? g_config.crash_impulse_mult : 1.0f;
+  Vector2 crash_pos = Vector2Scale(Vector2Add(c1->pos, c2->pos), 0.5f);
+
+  if (same_team) {
+    // Friendly collision in 2v2: bump impulses apply, but NO item stealing or drops!
+    Color team_col = (g_players[idx1].team_id == 1) ? BLUE : RED;
+    spawn_shockwave(crash_pos, 0.9f * bump_mult, team_col);
+    spawn_floating_text(crash_pos, "TEAM BUMP!", team_col);
+
+    if (g_net.mode == NET_MODE_HOST && g_net.state == NET_STATE_CONNECTED) {
+      PktCollisionEvent pkt = {
+          .header = {.type = PKT_COLLISION_EVENT},
+          .impulse_x = bump_impulse.x * bump_mult,
+          .impulse_y = bump_impulse.y * bump_mult,
+          .ang_impulse = bump_ang * bump_mult,
+          .faster_player_id = 0,
+          .transferred_texture_id = -1,
+          .p1_dropped_texture_id = -1,
+          .p1_drop_x = 0, .p1_drop_y = 0,
+          .p2_dropped_texture_id = -1,
+          .p2_drop_x = 0, .p2_drop_y = 0,
+          .p1_id = (uint8_t)p1_id,
+          .p2_id = (uint8_t)p2_id,
+      };
+      net_send_collision_event(&pkt);
+    }
+    return;
+  }
+
+  // Opponent collision: competitive stealing & grocery drops
+  float p1_speed = Vector2Length(c1->vel);
+  float p2_speed = Vector2Length(c2->vel);
   float min_speed = (g_config.min_crash_speed > 0.0f) ? g_config.min_crash_speed : 0.02f;
   int faster_id = 0;
   if (p1_speed > p2_speed + min_speed) {
-    faster_id = 1;
+    faster_id = p1_id;
   } else if (p2_speed > p1_speed + min_speed) {
-    faster_id = 2;
+    faster_id = p2_id;
   } else if (p1_speed > p2_speed) {
-    faster_id = 1;
+    faster_id = p1_id;
   } else if (p2_speed > p1_speed) {
-    faster_id = 2;
+    faster_id = p2_id;
   }
 
   int transferred_texture_id = -1;
 
   if (faster_id != 0 && g_config.theft_mode == 1) {
-    Cart *faster_cart = (faster_id == 1) ? &main_cart : &remote_cart;
-    ShoppingList *faster_slist =
-        (faster_id == 1) ? &local_shopping_list : &remote_shopping_list;
-    Cart *slower_cart = (faster_id == 1) ? &remote_cart : &main_cart;
-    ShoppingList *slower_slist =
-        (faster_id == 1) ? &remote_shopping_list : &local_shopping_list;
+    int slower_id = (faster_id == p1_id) ? p2_id : p1_id;
+    Cart *faster_cart = &g_players[faster_id - 1].cart;
+    Cart *slower_cart = &g_players[slower_id - 1].cart;
+    ShoppingList *faster_slist = get_player_shopping_list(faster_id);
+    ShoppingList *slower_slist = get_player_shopping_list(slower_id);
 
     int best_cand_idx = -1;
     for (int i = 0; i < slower_cart->items.len; i++) {
       Item it = slower_cart->items.items[i];
       bool in_slower_initial = false;
       for (int k = 0; k < slower_slist->initial_len; k++) {
-        if (items_table[slower_slist->initial_items[k]].image.id ==
-            it.image.id) {
+        if (items_table[slower_slist->initial_items[k]].image.id == it.image.id) {
           in_slower_initial = true;
           break;
         }
@@ -684,10 +887,14 @@ static void handle_host_cart_collision(float p1_speed, float p2_speed,
         spawn_shockwave(faster_cart->pos, 0.7f, GOLD);
 
         if (faster_slist->len == 0 && winner == 0) {
-          winner = faster_id;
-          winning_time = ela_time;
-          if (g_net.mode != NET_MODE_SINGLE) {
-            net_send_game_over((uint8_t)winner, winning_time);
+          if (g_config.game_mode == GAME_MODE_2V2) {
+            winner = g_players[faster_id - 1].team_id;
+            winning_time = ela_time;
+            net_send_game_over_multi((uint8_t)faster_id, winning_time, (uint8_t)winner);
+          } else {
+            winner = faster_id;
+            winning_time = ela_time;
+            net_send_game_over_multi((uint8_t)winner, winning_time, 0);
           }
         }
       }
@@ -695,9 +902,6 @@ static void handle_host_cart_collision(float p1_speed, float p2_speed,
   }
 
   // Crash impact shockwave
-  float bump_mult = (g_config.crash_impulse_mult > 0.0f) ? g_config.crash_impulse_mult : 1.0f;
-  Vector2 crash_pos =
-      Vector2Scale(Vector2Add(main_cart.pos, remote_cart.pos), 0.5f);
   spawn_shockwave(crash_pos, 1.3f * bump_mult, ORANGE);
 
   // Floor drop items based on room config
@@ -705,45 +909,43 @@ static void handle_host_cart_collision(float p1_speed, float p2_speed,
 
   int p1_drop_tex_id = -1;
   Vector2 p1_drop_pos = Vector2Zero();
-  for (int d = 0; d < max_drops && main_cart.items.len > 0; d++) {
-    int drop_idx = main_cart.items.len - 1;
-    Item p1_dropped;
-    if (cart_remove_item(&main_cart, drop_idx, &p1_dropped)) {
-      shopping_list_readd(&local_shopping_list, p1_dropped);
+  for (int d = 0; d < max_drops && c1->items.len > 0; d++) {
+    int drop_idx = c1->items.len - 1;
+    Item dropped;
+    if (cart_remove_item(c1, drop_idx, &dropped)) {
+      shopping_list_readd(get_player_shopping_list(p1_id), dropped);
       float ang = mall_rand_float() * 2.0f * PI;
       float r = 0.5f + mall_rand_float() * 0.35f;
-      p1_dropped.pos =
-          Vector2Add(main_cart.pos, (Vector2){cosf(ang) * r, sinf(ang) * r});
-      p1_dropped.rot = mall_rand_float() * 2.0f * PI;
-      p1_drop_tex_id = (int)p1_dropped.image.id;
-      p1_drop_pos = p1_dropped.pos;
-      itemarr_push(&items, p1_dropped);
+      dropped.pos = Vector2Add(c1->pos, (Vector2){cosf(ang) * r, sinf(ang) * r});
+      dropped.rot = mall_rand_float() * 2.0f * PI;
+      p1_drop_tex_id = (int)dropped.image.id;
+      p1_drop_pos = dropped.pos;
+      itemarr_push(&items, dropped);
 
-      spawn_flying_drop(p1_dropped, main_cart.pos, p1_drop_pos, 1);
-      add_dropped_floor_item(p1_drop_pos, p1_drop_tex_id, 1);
-      spawn_floating_text(main_cart.pos, "-1 DROPPED", (Color){255, 80, 80, 255});
+      spawn_flying_drop(dropped, c1->pos, p1_drop_pos, p1_id);
+      add_dropped_floor_item(p1_drop_pos, p1_drop_tex_id, p1_id);
+      spawn_floating_text(c1->pos, "-1 DROPPED", (Color){255, 80, 80, 255});
     }
   }
 
   int p2_drop_tex_id = -1;
   Vector2 p2_drop_pos = Vector2Zero();
-  for (int d = 0; d < max_drops && remote_cart.items.len > 0; d++) {
-    int drop_idx = remote_cart.items.len - 1;
-    Item p2_dropped;
-    if (cart_remove_item(&remote_cart, drop_idx, &p2_dropped)) {
-      shopping_list_readd(&remote_shopping_list, p2_dropped);
+  for (int d = 0; d < max_drops && c2->items.len > 0; d++) {
+    int drop_idx = c2->items.len - 1;
+    Item dropped;
+    if (cart_remove_item(c2, drop_idx, &dropped)) {
+      shopping_list_readd(get_player_shopping_list(p2_id), dropped);
       float ang = mall_rand_float() * 2.0f * PI;
       float r = 0.5f + mall_rand_float() * 0.35f;
-      p2_dropped.pos =
-          Vector2Add(remote_cart.pos, (Vector2){cosf(ang) * r, sinf(ang) * r});
-      p2_dropped.rot = mall_rand_float() * 2.0f * PI;
-      p2_drop_tex_id = (int)p2_dropped.image.id;
-      p2_drop_pos = p2_dropped.pos;
-      itemarr_push(&items, p2_dropped);
+      dropped.pos = Vector2Add(c2->pos, (Vector2){cosf(ang) * r, sinf(ang) * r});
+      dropped.rot = mall_rand_float() * 2.0f * PI;
+      p2_drop_tex_id = (int)dropped.image.id;
+      p2_drop_pos = dropped.pos;
+      itemarr_push(&items, dropped);
 
-      spawn_flying_drop(p2_dropped, remote_cart.pos, p2_drop_pos, 2);
-      add_dropped_floor_item(p2_drop_pos, p2_drop_tex_id, 2);
-      spawn_floating_text(remote_cart.pos, "-1 DROPPED", (Color){255, 80, 80, 255});
+      spawn_flying_drop(dropped, c2->pos, p2_drop_pos, p2_id);
+      add_dropped_floor_item(p2_drop_pos, p2_drop_tex_id, p2_id);
+      spawn_floating_text(c2->pos, "-1 DROPPED", (Color){255, 80, 80, 255});
     }
   }
 
@@ -763,46 +965,60 @@ static void handle_host_cart_collision(float p1_speed, float p2_speed,
         .p2_dropped_texture_id = p2_drop_tex_id,
         .p2_drop_x = p2_drop_pos.x,
         .p2_drop_y = p2_drop_pos.y,
+        .p1_id = (uint8_t)p1_id,
+        .p2_id = (uint8_t)p2_id,
     };
     net_send_collision_event(&pkt);
   }
 
-  if (transferred_texture_id != -1) {
-    if (faster_id == 1) {
-      snprintf(crash_toast_text, sizeof(crash_toast_text),
-               "CRASH! You stole an item from Opponent!");
+  if (p1_id == g_local_player_id || p2_id == g_local_player_id) {
+    if (transferred_texture_id != -1) {
+      if (faster_id == g_local_player_id) {
+        snprintf(crash_toast_text, sizeof(crash_toast_text),
+                 "CRASH! You stole an item from Opponent!");
+      } else {
+        snprintf(crash_toast_text, sizeof(crash_toast_text),
+                 "CRASH! Opponent stole an item from you!");
+      }
     } else {
       snprintf(crash_toast_text, sizeof(crash_toast_text),
-               "CRASH! Opponent stole an item from you!");
+               "CRASH! Groceries dropped on the floor!");
     }
-  } else {
-    snprintf(crash_toast_text, sizeof(crash_toast_text),
-             "CRASH! Groceries dropped on the floor!");
+    crash_toast_time = now;
   }
-  crash_toast_time = now;
 }
 
 static void handle_client_collision_event(const PktCollisionEvent *ev) {
   float now = (float)GetTime();
   last_collision_time = now;
 
-  Vector2 crash_pos =
-      Vector2Scale(Vector2Add(main_cart.pos, remote_cart.pos), 0.5f);
+  int p1_id = (ev->p1_id >= 1 && ev->p1_id <= MAX_PLAYERS) ? ev->p1_id : 1;
+  int p2_id = (ev->p2_id >= 1 && ev->p2_id <= MAX_PLAYERS) ? ev->p2_id : 2;
+
+  Cart *c1 = &g_players[p1_id - 1].cart;
+  Cart *c2 = &g_players[p2_id - 1].cart;
+
+  Vector2 crash_pos = Vector2Scale(Vector2Add(c1->pos, c2->pos), 0.5f);
   spawn_shockwave(crash_pos, 1.3f, ORANGE);
 
-  main_cart.vel = Vector2Add(
-      main_cart.vel, (Vector2){ev->impulse_x, ev->impulse_y});
-  main_cart.ang_vel += ev->ang_impulse;
+  // Apply impulse to local cart if involved
+  if (g_local_player_id == p1_id) {
+    main_cart.vel = Vector2Add(
+        main_cart.vel, (Vector2){ev->impulse_x, ev->impulse_y});
+    main_cart.ang_vel += ev->ang_impulse;
+  } else if (g_local_player_id == p2_id) {
+    main_cart.vel = Vector2Add(
+        main_cart.vel, (Vector2){-ev->impulse_x, -ev->impulse_y});
+    main_cart.ang_vel -= ev->ang_impulse;
+  }
 
-  if (ev->transferred_texture_id != -1) {
-    Cart *faster_cart =
-        (ev->faster_player_id == 2) ? &main_cart : &remote_cart;
-    ShoppingList *faster_slist =
-        (ev->faster_player_id == 2) ? &local_shopping_list : &remote_shopping_list;
-    Cart *slower_cart =
-        (ev->faster_player_id == 2) ? &remote_cart : &main_cart;
-    ShoppingList *slower_slist =
-        (ev->faster_player_id == 2) ? &remote_shopping_list : &local_shopping_list;
+  if (ev->transferred_texture_id != -1 && ev->faster_player_id != 0) {
+    int faster_id = ev->faster_player_id;
+    int slower_id = (faster_id == p1_id) ? p2_id : p1_id;
+    Cart *faster_cart = &g_players[faster_id - 1].cart;
+    Cart *slower_cart = &g_players[slower_id - 1].cart;
+    ShoppingList *faster_slist = get_player_shopping_list(faster_id);
+    ShoppingList *slower_slist = get_player_shopping_list(slower_id);
 
     Item stolen_item;
     bool found = cart_remove_item_by_texture_id(
@@ -823,111 +1039,192 @@ static void handle_client_collision_event(const PktCollisionEvent *ev) {
     spawn_shockwave(faster_cart->pos, 0.7f, GOLD);
 
     if (faster_slist->len == 0 && winner == 0) {
-      winner = ev->faster_player_id;
+      if (g_config.game_mode == GAME_MODE_2V2) {
+        winner = g_players[faster_id - 1].team_id;
+      } else {
+        winner = faster_id;
+      }
       winning_time = ela_time;
     }
   }
 
-  // Player 1 drop (remote cart on client)
+  // Player 1 drop
   if (ev->p1_dropped_texture_id != -1) {
     Item p1_dropped;
     bool found = cart_remove_item_by_texture_id(
-        &remote_cart, (unsigned int)ev->p1_dropped_texture_id, &p1_dropped);
+        c1, (unsigned int)ev->p1_dropped_texture_id, &p1_dropped);
     if (!found) {
       int tbl_idx = item_table_find_by_texture_id(
           (unsigned int)ev->p1_dropped_texture_id);
       if (tbl_idx != -1)
         p1_dropped = items_table[tbl_idx];
-      else if (remote_cart.items.len > 0)
-        cart_remove_item(&remote_cart, remote_cart.items.len - 1, &p1_dropped);
+      else if (c1->items.len > 0)
+        cart_remove_item(c1, c1->items.len - 1, &p1_dropped);
     }
-    shopping_list_readd(&remote_shopping_list, p1_dropped);
+    shopping_list_readd(get_player_shopping_list(p1_id), p1_dropped);
     p1_dropped.pos = (Vector2){ev->p1_drop_x, ev->p1_drop_y};
     p1_dropped.rot = mall_rand_float() * 2.0f * PI;
     itemarr_push(&items, p1_dropped);
 
-    spawn_flying_drop(p1_dropped, remote_cart.pos, p1_dropped.pos, 1);
-    add_dropped_floor_item(p1_dropped.pos, (int)p1_dropped.image.id, 1);
-    spawn_floating_text(remote_cart.pos, "-1 DROPPED", (Color){255, 80, 80, 255});
+    spawn_flying_drop(p1_dropped, c1->pos, p1_dropped.pos, p1_id);
+    add_dropped_floor_item(p1_dropped.pos, (int)p1_dropped.image.id, p1_id);
+    spawn_floating_text(c1->pos, "-1 DROPPED", (Color){255, 80, 80, 255});
   }
 
-  // Player 2 drop (main cart on client)
+  // Player 2 drop
   if (ev->p2_dropped_texture_id != -1) {
     Item p2_dropped;
     bool found = cart_remove_item_by_texture_id(
-        &main_cart, (unsigned int)ev->p2_dropped_texture_id, &p2_dropped);
+        c2, (unsigned int)ev->p2_dropped_texture_id, &p2_dropped);
     if (!found) {
       int tbl_idx = item_table_find_by_texture_id(
           (unsigned int)ev->p2_dropped_texture_id);
       if (tbl_idx != -1)
         p2_dropped = items_table[tbl_idx];
-      else if (main_cart.items.len > 0)
-        cart_remove_item(&main_cart, main_cart.items.len - 1, &p2_dropped);
+      else if (c2->items.len > 0)
+        cart_remove_item(c2, c2->items.len - 1, &p2_dropped);
     }
-    shopping_list_readd(&local_shopping_list, p2_dropped);
+    shopping_list_readd(get_player_shopping_list(p2_id), p2_dropped);
     p2_dropped.pos = (Vector2){ev->p2_drop_x, ev->p2_drop_y};
     p2_dropped.rot = mall_rand_float() * 2.0f * PI;
     itemarr_push(&items, p2_dropped);
 
-    spawn_flying_drop(p2_dropped, main_cart.pos, p2_dropped.pos, 2);
-    add_dropped_floor_item(p2_dropped.pos, (int)p2_dropped.image.id, 2);
-    spawn_floating_text(main_cart.pos, "-1 DROPPED", (Color){255, 80, 80, 255});
+    spawn_flying_drop(p2_dropped, c2->pos, p2_dropped.pos, p2_id);
+    add_dropped_floor_item(p2_dropped.pos, (int)p2_dropped.image.id, p2_id);
+    spawn_floating_text(c2->pos, "-1 DROPPED", (Color){255, 80, 80, 255});
   }
 
   sync_local_shopping_list();
 
-  if (ev->transferred_texture_id != -1) {
-    if (ev->faster_player_id == 2) {
-      snprintf(crash_toast_text, sizeof(crash_toast_text),
-               "CRASH! You stole an item from Opponent!");
+  if (p1_id == g_local_player_id || p2_id == g_local_player_id) {
+    if (ev->transferred_texture_id != -1) {
+      if (ev->faster_player_id == g_local_player_id) {
+        snprintf(crash_toast_text, sizeof(crash_toast_text),
+                 "CRASH! You stole an item from Opponent!");
+      } else {
+        snprintf(crash_toast_text, sizeof(crash_toast_text),
+                 "CRASH! Opponent stole an item from you!");
+      }
     } else {
       snprintf(crash_toast_text, sizeof(crash_toast_text),
-               "CRASH! Opponent stole an item from you!");
+               "CRASH! Groceries dropped on the floor!");
     }
-  } else {
-    snprintf(crash_toast_text, sizeof(crash_toast_text),
-             "CRASH! Groceries dropped on the floor!");
+    crash_toast_time = now;
   }
-  crash_toast_time = now;
 }
 
 static void DrawTickFrame(void) {
   if (g_app_state == APP_STATE_LOBBY) {
-    BeginDrawing();
-    ClearBackground((Color){15, 23, 42, 255});
-
     int sw = GetScreenWidth();
     int sh = GetScreenHeight();
 
+    float btn_w = 440.0f;
+    if (btn_w > (float)sw - 40.0f) btn_w = (float)sw - 40.0f;
+    float btn_h = 54.0f;
+    float btn_x = ((float)sw - btn_w) * 0.5f;
+    float btn_y = (float)sh * 0.5f + 65.0f;
+    Rectangle btn_rect = (Rectangle){btn_x, btn_y, btn_w, btn_h};
+
+    Vector2 mouse_pos = GetMousePosition();
+    bool btn_hover = CheckCollisionPointRec(mouse_pos, btn_rect);
+    if (btn_hover) {
+      SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
+    } else {
+      SetMouseCursor(MOUSE_CURSOR_DEFAULT);
+    }
+
+    BeginDrawing();
+    ClearBackground((Color){15, 23, 42, 255});
+
     const char *title = "gloBUS";
     int tw = MeasureText(title, 56);
-    DrawText(title, sw / 2 - tw / 2, sh / 2 - 120, 56, (Color){96, 165, 250, 255});
+    DrawText(title, sw / 2 - tw / 2, sh / 2 - 130, 56, (Color){96, 165, 250, 255});
 
     const char *sub = "Shopping Cart Simulator";
     int subw = MeasureText(sub, 20);
-    DrawText(sub, sw / 2 - subw / 2, sh / 2 - 50, 20, (Color){148, 163, 184, 255});
+    DrawText(sub, sw / 2 - subw / 2, sh / 2 - 60, 20, (Color){148, 163, 184, 255});
 
-    const char *hint = "Use the lobby menu above to create/join a room or play solo!";
+#if defined(__EMSCRIPTEN__)
+    const char *hint = "Use the lobby menu to create/join a room, or jump straight into solo practice!";
+#else
+    const char *hint = "Race your shopping cart through the aisles to collect groceries!";
+#endif
     int hw = MeasureText(hint, 16);
-    DrawText(hint, sw / 2 - hw / 2, sh / 2 + 10, 16, (Color){203, 213, 225, 255});
+    DrawText(hint, sw / 2 - hw / 2, sh / 2 - 10, 16, (Color){203, 213, 225, 255});
 
     const char *ctrls = "Controls: WASD or H/J/K/L to drive | SPACE/ENTER/E to pick items";
     int cw = MeasureText(ctrls, 14);
-    DrawText(ctrls, sw / 2 - cw / 2, sh / 2 + 45, 14, (Color){100, 116, 139, 255});
+    DrawText(ctrls, sw / 2 - cw / 2, sh / 2 + 25, 14, (Color){100, 116, 139, 255});
 
-    const char *solo = "Press [1] or [SPACE] for Quick Solo Practice";
-    int solow = MeasureText(solo, 15);
-    DrawText(solo, sw / 2 - solow / 2, sh / 2 + 85, 15, (Color){59, 130, 246, 255});
+    // Draw styled interactive button
+    Color btn_bg = btn_hover ? (Color){37, 99, 235, 255} : (Color){29, 78, 216, 230};
+    Color btn_border = btn_hover ? (Color){191, 219, 254, 255} : (Color){96, 165, 250, 255};
+    DrawRectangleRounded(btn_rect, 0.28f, 6, btn_bg);
+    DrawRectangleRoundedLinesEx(btn_rect, 0.28f, 6, 2.0f, btn_border);
+
+    const char *btn_text = "🛒 Start Solo Practice";
+    int btw = MeasureText(btn_text, 22);
+    DrawText(btn_text, (int)(btn_x + (btn_w - btw) * 0.5f), (int)(btn_y + 16.0f), 22, WHITE);
+
+    const char *key_hint = "Click button or press [SPACE] / [ENTER] / [1] to start";
+    int khw = MeasureText(key_hint, 14);
+    DrawText(key_hint, sw / 2 - khw / 2, (int)(btn_y + btn_h + 16.0f), 14, (Color){148, 163, 184, 255});
+
+#if !defined(__EMSCRIPTEN__)
+    const char *quit_hint = "Press [ESC] or [Q] to quit";
+    int qhw = MeasureText(quit_hint, 13);
+    DrawText(quit_hint, sw / 2 - qhw / 2, (int)(btn_y + btn_h + 40.0f), 13, (Color){100, 116, 139, 255});
+#else
+    const char *esc_hint = "Press [ESC] to toggle Web Lobby menu";
+    int ehw = MeasureText(esc_hint, 13);
+    DrawText(esc_hint, sw / 2 - ehw / 2, (int)(btn_y + btn_h + 40.0f), 13, (Color){100, 116, 139, 255});
+#endif
 
     EndDrawing();
 
-    if (IsKeyPressed(KEY_ONE) || IsKeyPressed(KEY_SPACE)) {
+    bool should_start = false;
+    if (IsKeyPressed(KEY_ONE) || IsKeyPressed(KEY_KP_1) ||
+        IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_ENTER) ||
+        IsKeyPressed(KEY_KP_ENTER) || IsKeyPressed(KEY_E)) {
+      should_start = true;
+    }
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) || IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+      should_start = true;
+    }
+    if (GetTouchPointCount() > 0) {
+      should_start = true;
+    }
+
+    if (should_start) {
+      SetMouseCursor(MOUSE_CURSOR_DEFAULT);
       start_singleplayer();
+      return;
+    }
+
+    if (IsKeyPressed(KEY_ESCAPE) || IsKeyPressed(KEY_Q)) {
+#if defined(__EMSCRIPTEN__)
+      EM_ASM({
+        if (window.onReturnToLobby) window.onReturnToLobby();
+      });
+#else
+      CloseWindow();
+      exit(0);
+#endif
+      return;
     }
     return;
   }
 
   if (IsKeyPressed(KEY_ESCAPE)) {
+#if defined(__EMSCRIPTEN__)
+    int just_exited_fs = EM_ASM_INT({
+      return (window._justExitedFs && window._justExitedFs()) ? 1 : 0;
+    });
+    if (just_exited_fs) {
+      // User pressed ESC to exit browser fullscreen, do not abandon match!
+      return;
+    }
+#endif
     return_to_lobby();
     return;
   }
@@ -959,11 +1256,31 @@ static void DrawTickFrame(void) {
       switch (pkt.header.type) {
       case PKT_HELLO:
         if (g_net.mode == NET_MODE_HOST) {
+          uint8_t pid = pkt.hello.player_id;
+          if (pid < 1 || pid > MAX_PLAYERS) pid = 2;
+          int idx = pid - 1;
+          g_players[idx].active = true;
+          if (pkt.hello.player_name[0] != '\0') {
+            snprintf(g_players[idx].name, sizeof(g_players[idx].name), "%s", pkt.hello.player_name);
+          }
+          if (g_config.game_mode == GAME_MODE_2V2) {
+            g_players[idx].team_id = (pkt.hello.team_id > 0) ? pkt.hello.team_id : (pid <= 2 ? 1 : 2);
+          } else {
+            g_players[idx].team_id = pid;
+          }
+          has_remote_cart = true;
+
+          uint8_t mask = 0;
+          uint8_t teams[MAX_NET_PLAYERS];
+          for (int i = 0; i < MAX_PLAYERS; i++) {
+            if (g_players[i].active) mask |= (uint8_t)(1 << i);
+            teams[i] = g_players[i].team_id;
+          }
           if (winner != 0) {
             restart_match();
           } else {
-            net_send_init(net_seed, &g_config, shopping_list, shopping_list_len,
-                          host_grid_mask);
+            net_send_init_multi(net_seed, &g_config, shopping_list, shopping_list_len,
+                                host_grid_mask, mask, teams);
           }
           g_net.state = NET_STATE_CONNECTING;
         }
@@ -975,25 +1292,23 @@ static void DrawTickFrame(void) {
           cleanup_game_world();
           init_game_world(pkt.init.seed, pkt.init.grid_mask);
           apply_remote_shopping_list(&pkt.init);
+
           float cx = (float)((g_config.mall_width > 0 ? g_config.mall_width : 24) / 2);
           float cy = (float)((g_config.mall_height > 0 ? g_config.mall_height : 24) / 2);
-          main_cart.pos = (Vector2){cx + 0.5f, cy};
-          main_cart.vel = Vector2Zero();
-          main_cart.rot = 0.0f;
-          main_cart.ang_vel = 0.0f;
-          remote_cart.pos = (Vector2){cx - 0.5f, cy};
-          remote_cart.vel = Vector2Zero();
-          remote_cart.rot = 0.0f;
-          remote_cart.ang_vel = 0.0f;
-          remote_target_pos = remote_cart.pos;
-          remote_target_vel = Vector2Zero();
-          remote_target_rot = 0.0f;
-          remote_target_ang_vel = 0.0f;
-          remote_last_packet_time = now;
+
+          for (int i = 0; i < MAX_PLAYERS; i++) {
+            init_player_cart(i + 1, cx, cy);
+            if (pkt.init.active_players_mask & (1 << i)) {
+              g_players[i].active = true;
+              if (pkt.init.player_teams[i] > 0) {
+                g_players[i].team_id = pkt.init.player_teams[i];
+              }
+            }
+          }
+          g_players[g_local_player_id - 1].active = true;
+          has_remote_cart = any_remote_player_active();
           last_cart_state_send_time = 0.0f;
           last_sent_pick_side = -1;
-          remote_pick_side = -1;
-          has_remote_cart = true;
           net_send_ready();
           g_net.state = NET_STATE_CONNECTED;
         }
@@ -1006,28 +1321,28 @@ static void DrawTickFrame(void) {
         }
         break;
 
-      case PKT_CART_STATE:
-        if (has_remote_cart) {
-          remote_target_pos = (Vector2){pkt.cart.pos_x, pkt.cart.pos_y};
-          remote_target_vel = (Vector2){pkt.cart.vel_x, pkt.cart.vel_y};
-          remote_target_rot = pkt.cart.rot;
-          remote_target_ang_vel = pkt.cart.ang_vel;
-          remote_pick_side = pkt.cart.pick_side;
-          remote_pick_pos = (Vector2){pkt.cart.pick_pos_x, pkt.cart.pick_pos_y};
-          remote_cart.mass = pkt.cart.mass;
-          remote_last_packet_time = now;
+      case PKT_CART_STATE: {
+        uint8_t pid = pkt.cart.player_id;
+        if (pid >= 1 && pid <= MAX_PLAYERS && pid != g_local_player_id) {
+          int idx = pid - 1;
+          g_players[idx].active = true;
+          g_players[idx].target_pos = (Vector2){pkt.cart.pos_x, pkt.cart.pos_y};
+          g_players[idx].target_vel = (Vector2){pkt.cart.vel_x, pkt.cart.vel_y};
+          g_players[idx].target_rot = pkt.cart.rot;
+          g_players[idx].target_ang_vel = pkt.cart.ang_vel;
+          g_players[idx].pick_side = pkt.cart.pick_side;
+          g_players[idx].pick_target = (Vector2){pkt.cart.pick_pos_x, pkt.cart.pick_pos_y};
+          g_players[idx].cart.mass = pkt.cart.mass;
+          g_players[idx].last_packet_time = now;
+          has_remote_cart = true;
         }
         break;
+      }
 
       case PKT_BUMP:
         main_cart.vel = Vector2Add(
             main_cart.vel, (Vector2){pkt.bump.impulse_x, pkt.bump.impulse_y});
         main_cart.ang_vel += pkt.bump.ang_impulse;
-        if (g_net.mode == NET_MODE_HOST && winner == 0) {
-          float p1_spd = Vector2Length(main_cart.vel);
-          float p2_spd = Vector2Length(remote_cart.vel);
-          handle_host_cart_collision(p1_spd, p2_spd, Vector2Zero(), 0.0f);
-        }
         break;
 
       case PKT_COLLISION_EVENT:
@@ -1038,6 +1353,9 @@ static void DrawTickFrame(void) {
 
       case PKT_ITEM_PICK:
         if (world_initialized) {
+          int picker_id = pkt.pick.player_id;
+          if (picker_id < 1 || picker_id > MAX_PLAYERS) picker_id = 1;
+
           Vector2 target_pos = (Vector2){pkt.pick.pos_x, pkt.pick.pos_y};
           int found_idx = -1;
           float best_dist = 0.70f;
@@ -1048,20 +1366,37 @@ static void DrawTickFrame(void) {
               found_idx = i;
             }
           }
+          Cart *picker_cart = &g_players[picker_id - 1].cart;
+          ShoppingList *picker_slist = get_player_shopping_list(picker_id);
+          Item picked;
           if (found_idx != -1) {
-            Item picked = cart_consume_item(&remote_cart, &items, found_idx);
-            shopping_list_consume(&remote_shopping_list, picked);
+            picked = cart_consume_item(picker_cart, &items, found_idx);
+            shopping_list_consume(picker_slist, picked);
             remove_dropped_floor_item(picked.pos, (int)picked.image.id);
-            spawn_shockwave(picked.pos, 0.45f,
-                            (g_net.mode == NET_MODE_CLIENT ? BLUE : MAROON));
           } else {
-            Item dummy = {.image = (Texture2D){.id = pkt.pick.texture_id}};
-            shopping_list_consume(&remote_shopping_list, dummy);
+            picked = (Item){.image = (Texture2D){.id = pkt.pick.texture_id}};
+            shopping_list_consume(picker_slist, picked);
           }
+          sync_local_shopping_list();
 
-          if (remote_shopping_list.len == 0 && winner == 0) {
-            winner = (g_net.mode == NET_MODE_CLIENT ? 1 : 2);
-            winning_time = ela_time;
+          if (g_config.game_mode == GAME_MODE_2V2) {
+            int team = g_players[picker_id - 1].team_id;
+            bool is_my_team = (team == g_players[g_local_player_id - 1].team_id);
+            Color toast_c = (team == 1) ? (Color){96, 165, 250, 255} : (Color){248, 113, 113, 255};
+            spawn_shockwave(target_pos, 0.45f, toast_c);
+            if (is_my_team && picker_id != g_local_player_id) {
+              spawn_floating_text(picker_cart->pos, "+1 TEAM ITEM!", GOLD);
+            }
+            if (picker_slist->len == 0 && winner == 0) {
+              winner = team;
+              winning_time = ela_time;
+            }
+          } else {
+            spawn_shockwave(target_pos, 0.45f, PLAYER_BODY_COLORS[picker_id - 1]);
+            if (picker_slist->len == 0 && winner == 0) {
+              winner = picker_id;
+              winning_time = ela_time;
+            }
           }
         }
         break;
@@ -1069,10 +1404,16 @@ static void DrawTickFrame(void) {
       case PKT_GAME_OVER:
         if (winner == 0 || winning_time == 0.0f ||
             pkt.game_over.final_time > 0.0f) {
-          winner = pkt.game_over.winner_id;
-          winning_time = pkt.game_over.final_time;
-          if (winner == (g_net.mode == NET_MODE_CLIENT ? 1 : 2)) {
-            remote_shopping_list.len = 0;
+          if (g_config.game_mode == GAME_MODE_2V2 && pkt.game_over.winning_team > 0) {
+            winner = pkt.game_over.winning_team;
+            winning_time = pkt.game_over.final_time;
+            team_shopping_lists[winner].len = 0;
+          } else {
+            winner = pkt.game_over.winner_id;
+            winning_time = pkt.game_over.final_time;
+            if (winner >= 1 && winner <= MAX_PLAYERS) {
+              g_players[winner - 1].shopping_list.len = 0;
+            }
           }
         }
         break;
@@ -1186,12 +1527,10 @@ static void DrawTickFrame(void) {
   }
 
   if (IsKeyDown(KEY_A)) {
-    cart_apply_force_rotated(&main_cart, (Vector2){0.25f, 0.27f},
-                             (Vector2){0.0f, -CART_PUSH_FORCE * 0.9f}, delta);
     cart_apply_force_rotated(&main_cart, (Vector2){-0.25f, 0.27f},
+                             (Vector2){0.0f, -CART_PUSH_FORCE * 0.9f}, delta);
+    cart_apply_force_rotated(&main_cart, (Vector2){0.25f, 0.27f},
                              (Vector2){0.0f, CART_PUSH_FORCE * 0.9f}, delta);
-    // cart_apply_force_rotated(&main_cart, (Vector2){0.0f, 0.27f},
-    // (Vector2){CART_PUSH_FORCE * 0.35f, 0.0f}, delta);
   }
 
   if (IsKeyDown(KEY_D)) {
@@ -1199,9 +1538,6 @@ static void DrawTickFrame(void) {
                              (Vector2){0.0f, -CART_PUSH_FORCE * 0.9f}, delta);
     cart_apply_force_rotated(&main_cart, (Vector2){0.25f, 0.27f},
                              (Vector2){0.0f, CART_PUSH_FORCE * 0.9f}, delta);
-    // cart_apply_force_rotated(&main_cart, (Vector2){0.0f, 0.27f},
-    //                          (Vector2){-CART_PUSH_FORCE * 0.35f, 0.0f},
-    //                          delta);
   }
 
   if (IsKeyDown(KEY_O))
@@ -1218,53 +1554,64 @@ static void DrawTickFrame(void) {
   // Local physics simulation
   cart_tick(&main_cart, walls, walls.len, delta);
 
-  // Remote cart smooth interpolation and cart-on-cart collision
-  if (has_remote_cart) {
-    float time_since_packet = now - remote_last_packet_time;
-    // Dead reckoning: extrapolate remote cart position forward between 30Hz packets or brief network hiccups
+  // Remote carts smooth interpolation and cart-on-cart collisions
+  has_remote_cart = any_remote_player_active();
+  for (int i = 0; i < MAX_PLAYERS; i++) {
+    if (i == g_local_player_id - 1 || !g_players[i].active) continue;
+
+    PlayerSlot *p = &g_players[i];
+    float time_since_packet = now - p->last_packet_time;
     if (time_since_packet > 0.016f && time_since_packet < 0.75f) {
-      remote_target_pos =
-          Vector2Add(remote_target_pos, Vector2Scale(remote_target_vel, delta));
-      remote_target_rot += remote_target_ang_vel * delta;
-      // If no packet for > 0.25s, gently decay extrapolated velocity to avoid sliding through walls indefinitely
+      p->target_pos = Vector2Add(p->target_pos, Vector2Scale(p->target_vel, delta));
+      p->target_rot += p->target_ang_vel * delta;
       if (time_since_packet > 0.25f) {
         float damp = fmaxf(0.0f, 1.0f - 3.5f * delta);
-        remote_target_vel = Vector2Scale(remote_target_vel, damp);
-        remote_target_ang_vel *= damp;
+        p->target_vel = Vector2Scale(p->target_vel, damp);
+        p->target_ang_vel *= damp;
       }
     }
 
-    // Distance check: snap if desync or teleport distance is too large (> 4.5m)
-    float dist = Vector2Distance(remote_cart.pos, remote_target_pos);
+    float dist = Vector2Distance(p->cart.pos, p->target_pos);
     if (dist > 4.5f) {
-      remote_cart.pos = remote_target_pos;
-      remote_cart.rot = remote_target_rot;
+      p->cart.pos = p->target_pos;
+      p->cart.rot = p->target_rot;
     } else {
-      // Frame-rate independent exponential smoothing
       float blend = 1.0f - expf(-18.0f * delta);
-      if (blend > 0.65f)
-        blend = 0.65f;
-      remote_cart.pos = Vector2Lerp(remote_cart.pos, remote_target_pos, blend);
-      remote_cart.rot = LerpAngle(remote_cart.rot, remote_target_rot, blend);
+      if (blend > 0.65f) blend = 0.65f;
+      p->cart.pos = Vector2Lerp(p->cart.pos, p->target_pos, blend);
+      p->cart.rot = LerpAngle(p->cart.rot, p->target_rot, blend);
     }
-    remote_cart.vel = remote_target_vel;
-    remote_cart.ang_vel = remote_target_ang_vel;
+    p->cart.vel = p->target_vel;
+    p->cart.ang_vel = p->target_ang_vel;
 
-    // Cart-on-cart bumping physics
-    float p1_speed = (g_net.mode == NET_MODE_CLIENT)
-                         ? Vector2Length(remote_cart.vel)
-                         : Vector2Length(main_cart.vel);
-    float p2_speed = (g_net.mode == NET_MODE_CLIENT)
-                         ? Vector2Length(main_cart.vel)
-                         : Vector2Length(remote_cart.vel);
+    // Local cart vs Remote cart collision
     Vector2 bump_impulse = Vector2Zero();
     float bump_ang = 0.0f;
-    if (cart_collide_cart(&main_cart, &remote_cart, &bump_impulse, &bump_ang)) {
+    if (cart_collide_cart(&main_cart, &p->cart, &bump_impulse, &bump_ang)) {
+      p->target_vel = p->cart.vel;
+      p->target_pos = p->cart.pos;
       if (g_net.mode == NET_MODE_HOST) {
-        handle_host_cart_collision(p1_speed, p2_speed, bump_impulse, bump_ang);
+        handle_host_cart_collision(g_local_player_id, i + 1, bump_impulse, bump_ang);
       }
-      remote_target_vel = remote_cart.vel;
-      remote_target_pos = remote_cart.pos;
+    }
+  }
+
+  // Host simulates remote vs remote collisions
+  if (g_net.mode == NET_MODE_HOST) {
+    for (int a = 0; a < MAX_PLAYERS; a++) {
+      if (a == g_local_player_id - 1 || !g_players[a].active) continue;
+      for (int b = a + 1; b < MAX_PLAYERS; b++) {
+        if (b == g_local_player_id - 1 || !g_players[b].active) continue;
+        Vector2 bump_impulse = Vector2Zero();
+        float bump_ang = 0.0f;
+        if (cart_collide_cart(&g_players[a].cart, &g_players[b].cart, &bump_impulse, &bump_ang)) {
+          g_players[a].target_vel = g_players[a].cart.vel;
+          g_players[a].target_pos = g_players[a].cart.pos;
+          g_players[b].target_vel = g_players[b].cart.vel;
+          g_players[b].target_pos = g_players[b].cart.pos;
+          handle_host_cart_collision(a + 1, b + 1, bump_impulse, bump_ang);
+        }
+      }
     }
   }
 
@@ -1306,24 +1653,40 @@ static void DrawTickFrame(void) {
     Item picked = items.items[pick_item_idx];
     cart_consume_item(&main_cart, &items, pick_item_idx);
     remove_dropped_floor_item(picked.pos, (int)picked.image.id);
-    spawn_shockwave(picked.pos, 0.45f, GREEN);
-    spawn_floating_text(main_cart.pos, "+1 ITEM", GREEN);
 
-    bool consumed = shopping_list_consume(&local_shopping_list, picked);
+    ShoppingList *my_slist = get_player_shopping_list(g_local_player_id);
+    bool consumed = shopping_list_consume(my_slist, picked);
     if (consumed) {
       sync_local_shopping_list();
     }
 
+    Color toast_c = GREEN;
+    if (g_config.game_mode == GAME_MODE_2V2) {
+      int team = g_players[g_local_player_id - 1].team_id;
+      toast_c = (team == 1) ? (Color){96, 165, 250, 255} : (Color){248, 113, 113, 255};
+      spawn_floating_text(main_cart.pos, "+1 TEAM ITEM", toast_c);
+    } else {
+      spawn_floating_text(main_cart.pos, "+1 ITEM", GREEN);
+    }
+    spawn_shockwave(picked.pos, 0.45f, toast_c);
+
     if (g_net.mode != NET_MODE_SINGLE) {
-      net_send_item_pick(picked.image.id, picked.pos,
-                         g_net.mode == NET_MODE_HOST ? 0 : 1);
+      net_send_item_pick((int)picked.image.id, picked.pos, g_local_player_id);
     }
 
-    if (local_shopping_list.len == 0 && winner == 0) {
-      winner = (g_net.mode == NET_MODE_CLIENT ? 2 : 1);
-      winning_time = ela_time;
-      if (g_net.mode != NET_MODE_SINGLE) {
-        net_send_game_over((uint8_t)winner, winning_time);
+    if (my_slist->len == 0 && winner == 0) {
+      if (g_config.game_mode == GAME_MODE_2V2) {
+        winner = g_players[g_local_player_id - 1].team_id;
+        winning_time = ela_time;
+        if (g_net.mode != NET_MODE_SINGLE) {
+          net_send_game_over_multi((uint8_t)g_local_player_id, winning_time, (uint8_t)winner);
+        }
+      } else {
+        winner = g_local_player_id;
+        winning_time = ela_time;
+        if (g_net.mode != NET_MODE_SINGLE) {
+          net_send_game_over_multi((uint8_t)winner, winning_time, 0);
+        }
       }
     }
 
@@ -1331,11 +1694,12 @@ static void DrawTickFrame(void) {
     pick_side = -1;
   }
 
-  // Rematch / Reset hotkey (R key or Gamepad Start / Y)
+  // Rematch / Reset hotkey (R key or Gamepad Start / Y or Space/Enter on game over)
   bool rematch_pressed =
       IsKeyPressed(KEY_R) ||
       IsGamepadButtonPressed(0, GAMEPAD_BUTTON_MIDDLE_RIGHT) ||
-      IsGamepadButtonPressed(0, GAMEPAD_BUTTON_RIGHT_FACE_UP);
+      IsGamepadButtonPressed(0, GAMEPAD_BUTTON_RIGHT_FACE_UP) ||
+      (winner != 0 && (IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)));
   if (rematch_pressed) {
     restart_match();
   }
@@ -1349,9 +1713,9 @@ static void DrawTickFrame(void) {
           (pick_side != -1 && pick_item_idx >= 0 && pick_item_idx < items.len)
               ? items.items[pick_item_idx].pos
               : Vector2Zero();
-      net_send_cart_state(main_cart.pos, main_cart.vel, main_cart.rot,
-                          main_cart.ang_vel, pick_side, pick_target,
-                          main_cart.mass);
+      net_send_cart_state_multi(main_cart.pos, main_cart.vel, main_cart.rot,
+                                main_cart.ang_vel, pick_side, pick_target,
+                                main_cart.mass, (uint8_t)g_local_player_id);
     }
   }
 
@@ -1506,17 +1870,20 @@ static void DrawTickFrame(void) {
                 (Color){0, 0, 0, (unsigned char)(120 * (1.0f - h * 0.5f))});
   }
 
-  // Draw remote cart
-  if (has_remote_cart) {
-    Item rem_item = {.pos = remote_pick_pos};
-    Item *p_rem_item = (remote_pick_side != -1) ? &rem_item : NULL;
-    cart_draw(&remote_cart, remote_pick_side, p_rem_item, topleft, botright);
+  // Draw all active carts
+  for (int i = 0; i < MAX_PLAYERS; i++) {
+    if (!g_players[i].active) continue;
+    if (i == g_local_player_id - 1) {
+      cart_draw(&main_cart, pick_side,
+                pick_item_idx >= 0 ? &items.items[pick_item_idx] : NULL,
+                topleft, botright);
+    } else {
+      Item rem_item = {.pos = g_players[i].pick_target};
+      Item *p_rem = (g_players[i].pick_side != -1) ? &rem_item : NULL;
+      cart_draw(&g_players[i].cart, g_players[i].pick_side, p_rem,
+                topleft, botright);
+    }
   }
-
-  // Draw local cart
-  cart_draw(&main_cart, pick_side,
-            pick_item_idx >= 0 ? &items.items[pick_item_idx] : NULL, topleft,
-            botright);
 
   itemarr_draw(items, Vector2Zero(), 0.0f, topleft, botright);
 
@@ -1544,16 +1911,68 @@ static void DrawTickFrame(void) {
     item_draw(flying_item, Vector2Zero(), 0.0f);
   }
 
-  // Draw hands
-  if (has_remote_cart) {
-    Item rem_item = {.pos = remote_pick_pos};
-    Item *p_rem_item = (remote_pick_side != -1) ? &rem_item : NULL;
-    cart_draw_hands(&remote_cart, remote_pick_side, p_rem_item);
+  // Draw hands for all active carts
+  for (int i = 0; i < MAX_PLAYERS; i++) {
+    if (!g_players[i].active) continue;
+    if (i == g_local_player_id - 1) {
+      cart_draw_hands(&main_cart, pick_side,
+                      pick_item_idx >= 0 ? &items.items[pick_item_idx] : NULL);
+    } else {
+      Item rem_item = {.pos = g_players[i].pick_target};
+      Item *p_rem = (g_players[i].pick_side != -1) ? &rem_item : NULL;
+      cart_draw_hands(&g_players[i].cart, g_players[i].pick_side, p_rem);
+    }
   }
-  cart_draw_hands(&main_cart, pick_side,
-                  pick_item_idx >= 0 ? &items.items[pick_item_idx] : NULL);
 
   EndMode2D();
+
+  // Draw overhead player name badges in screen coordinates
+  for (int i = 0; i < MAX_PLAYERS; i++) {
+    if (!g_players[i].active) continue;
+    Vector2 cp = (i == g_local_player_id - 1) ? main_cart.pos : g_players[i].cart.pos;
+    Vector2 sp = GetWorldToScreen2D(cp, cam);
+    if (sp.x < -100 || sp.x > GetScreenWidth() + 100 || sp.y < -100 || sp.y > GetScreenHeight() + 100) continue;
+
+    char tag[48];
+    Color badge_bg, badge_border;
+    bool is_local = (i == g_local_player_id - 1);
+
+    if (g_config.game_mode == GAME_MODE_2V2) {
+      int team = g_players[i].team_id;
+      const char *team_name = (team == 1) ? "BLUE" : "RED";
+      if (is_local) {
+        snprintf(tag, sizeof(tag), "[%s] P%d (YOU)", team_name, i + 1);
+        badge_bg = (team == 1) ? (Color){30, 70, 160, 230} : (Color){160, 30, 30, 230};
+        badge_border = GOLD;
+      } else {
+        bool is_teammate = (team == g_players[g_local_player_id - 1].team_id);
+        snprintf(tag, sizeof(tag), "[%s] P%d %s", team_name, i + 1, is_teammate ? "(TEAM)" : "(RIVAL)");
+        badge_bg = (team == 1) ? (Color){30, 70, 160, 200} : (Color){160, 30, 30, 200};
+        badge_border = is_teammate ? (Color){147, 197, 253, 255} : (Color){252, 165, 165, 255};
+      }
+    } else {
+      if (is_local) {
+        snprintf(tag, sizeof(tag), "P%d (YOU)", i + 1);
+        badge_bg = (Color){30, 41, 59, 230};
+        badge_border = GOLD;
+      } else {
+        snprintf(tag, sizeof(tag), "P%d", i + 1);
+        badge_bg = (Color){30, 41, 59, 200};
+        badge_border = (Color){148, 163, 184, 255};
+      }
+    }
+
+    int font_sz = 12;
+    int tw = MeasureText(tag, font_sz);
+    float bw = tw + 14.0f;
+    float bh = 18.0f;
+    float bx = sp.x - bw * 0.5f;
+    float by = sp.y - 48.0f;
+
+    DrawRectangleRounded((Rectangle){bx, by, bw, bh}, 0.35f, 4, badge_bg);
+    DrawRectangleRoundedLinesEx((Rectangle){bx, by, bw, bh}, 0.35f, 4, 1.5f, badge_border);
+    DrawText(tag, (int)(bx + 7.0f), (int)(by + 3.0f), font_sz, WHITE);
+  }
 
   // Floating badges above dropped floor items
   for (int i = 0; i < MAX_DROPPED_FLOOR_ITEMS; i++) {
@@ -1648,118 +2067,174 @@ static void DrawTickFrame(void) {
   }
 
   // --- SHOPPING LIST HUD ---
-  int my_id = (g_net.mode == NET_MODE_CLIENT ? 2 : 1);
-  int opp_id = (my_id == 1 ? 2 : 1);
-  Color my_dark_color = (my_id == 1) ? DARKBLUE : MAROON;
-  Color opp_dark_color = (opp_id == 1) ? DARKBLUE : MAROON;
-
   float top_y = (g_net.mode == NET_MODE_SINGLE) ? 20.0f : 34.0f;
   float spacing = 8.0f;
   float avail_h = (float)GetScreenHeight() - top_y - 20.0f;
   float item_height = (avail_h - spacing * (SHOPPING_LIST_MAX_LEN - 1)) /
                       (float)SHOPPING_LIST_MAX_LEN;
-  if (item_height > 65.0f)
-    item_height = 65.0f;
-  if (item_height < 38.0f)
-    item_height = 38.0f;
+  if (item_height > 65.0f) item_height = 65.0f;
+  if (item_height < 38.0f) item_height = 38.0f;
 
-  // Local player checklist (Left side, unboxed and big like before)
-  if (g_net.mode != NET_MODE_SINGLE) {
-    DrawText(TextFormat("YOU (%d)", local_shopping_list.len), 20, 12, 16,
-             my_dark_color);
-  }
-  for (int i = 0; i < local_shopping_list.len; i++) {
-    Item item = items_table[local_shopping_list.items[i]];
-    float scale = item_height / (float)item.image.height;
-    DrawTextureEx(item.image,
-                  (Vector2){20, top_y + (item_height + spacing) * i}, 0.0f,
-                  scale, WHITE);
-  }
+  if (g_config.game_mode == GAME_MODE_2V2) {
+    // 2v2 Mode HUD: Team Blue vs Team Red
+    int t1_rem = team_shopping_lists[1].len;
+    DrawText(TextFormat("TEAM BLUE (%d)", t1_rem), 20, 12, 16, (Color){30, 70, 160, 255});
+    for (int i = 0; i < t1_rem; i++) {
+      Item item = items_table[team_shopping_lists[1].items[i]];
+      float scale = item_height / (float)item.image.height;
+      DrawTextureEx(item.image, (Vector2){20, top_y + (item_height + spacing) * i}, 0.0f, scale, WHITE);
+    }
 
-  // Opponent checklist (Right side, multiplayer only)
-  if (g_net.mode != NET_MODE_SINGLE && has_remote_cart) {
-    const char *opp_hdr = TextFormat("OPPONENT (%d)", remote_shopping_list.len);
-    int opp_hdr_w = MeasureText(opp_hdr, 16);
-    DrawText(opp_hdr, GetScreenWidth() - opp_hdr_w - 20, 12, 16,
-             opp_dark_color);
-
-    for (int i = 0; i < remote_shopping_list.len; i++) {
-      Item opp_item = items_table[remote_shopping_list.items[i]];
+    int t2_rem = team_shopping_lists[2].len;
+    const char *t2_hdr = TextFormat("TEAM RED (%d)", t2_rem);
+    int t2_hdr_w = MeasureText(t2_hdr, 16);
+    DrawText(t2_hdr, GetScreenWidth() - t2_hdr_w - 20, 12, 16, (Color){180, 30, 30, 255});
+    for (int i = 0; i < t2_rem; i++) {
+      Item opp_item = items_table[team_shopping_lists[2].items[i]];
       float scale = item_height / (float)opp_item.image.height;
       float drawn_w = (float)opp_item.image.width * scale;
       float opp_x = (float)GetScreenWidth() - drawn_w - 20.0f;
-      DrawTextureEx(opp_item.image,
-                    (Vector2){opp_x, top_y + (item_height + spacing) * i}, 0.0f,
-                    scale, WHITE);
+      DrawTextureEx(opp_item.image, (Vector2){opp_x, top_y + (item_height + spacing) * i}, 0.0f, scale, WHITE);
     }
-  }
 
-  // --- TOP CENTER: RACE TIMER & LIVE COMPETITIVE STANDINGS ---
-  if (g_net.mode != NET_MODE_SINGLE && has_remote_cart) {
-    float badge_w = 360.0f;
+    // Top center banner: Team scores & live lead
+    float badge_w = 400.0f;
     float badge_h = 44.0f;
     float badge_x = ((float)GetScreenWidth() - badge_w) * 0.5f;
-    DrawRectangleRounded((Rectangle){badge_x, 8.0f, badge_w, badge_h}, 0.25f, 4,
-                         (Color){255, 255, 255, 230});
-    DrawRectangleRoundedLinesEx((Rectangle){badge_x, 8.0f, badge_w, badge_h},
-                                0.25f, 4, 2.0f, DARKGRAY);
+    DrawRectangleRounded((Rectangle){badge_x, 8.0f, badge_w, badge_h}, 0.25f, 4, (Color){255, 255, 255, 230});
+    DrawRectangleRoundedLinesEx((Rectangle){badge_x, 8.0f, badge_w, badge_h}, 0.25f, 4, 2.0f, DARKGRAY);
 
     const char *time_str = TextFormat("TIME: %.3f s", ela_time);
-    DrawText(time_str,
-             (int)(badge_x + (badge_w - MeasureText(time_str, 18)) * 0.5f), 12,
-             18, BLACK);
+    DrawText(time_str, (int)(badge_x + (badge_w - MeasureText(time_str, 18)) * 0.5f), 12, 18, BLACK);
 
     if (winner == 0) {
-      if (local_shopping_list.len < remote_shopping_list.len) {
-        int lead = remote_shopping_list.len - local_shopping_list.len;
-        const char *lead_str = TextFormat("YOU'RE LEADING by %d item%s!", lead,
-                                          lead > 1 ? "s" : "");
-        DrawText(lead_str,
-                 (int)(badge_x + (badge_w - MeasureText(lead_str, 13)) * 0.5f),
-                 32, 13, DARKGREEN);
-      } else if (local_shopping_list.len > remote_shopping_list.len) {
-        int behind = local_shopping_list.len - remote_shopping_list.len;
-        const char *behind_str = TextFormat("OPPONENT LEADING by %d item%s!",
-                                            behind, behind > 1 ? "s" : "");
-        DrawText(
-            behind_str,
-            (int)(badge_x + (badge_w - MeasureText(behind_str, 13)) * 0.5f), 32,
-            13, MAROON);
+      int my_team = g_players[g_local_player_id - 1].team_id;
+      int my_rem = team_shopping_lists[my_team].len;
+      int opp_rem = team_shopping_lists[my_team == 1 ? 2 : 1].len;
+      if (my_rem < opp_rem) {
+        int lead = opp_rem - my_rem;
+        const char *lead_str = TextFormat("YOUR TEAM LEADS by %d item%s!", lead, lead > 1 ? "s" : "");
+        DrawText(lead_str, (int)(badge_x + (badge_w - MeasureText(lead_str, 13)) * 0.5f), 32, 13, DARKGREEN);
+      } else if (my_rem > opp_rem) {
+        int behind = my_rem - opp_rem;
+        const char *behind_str = TextFormat("RIVAL TEAM LEADS by %d item%s!", behind, behind > 1 ? "s" : "");
+        DrawText(behind_str, (int)(badge_x + (badge_w - MeasureText(behind_str, 13)) * 0.5f), 32, 13, MAROON);
       } else {
-        const char *tied_str =
-            TextFormat("TIED RACE! (%d items each)", local_shopping_list.len);
-        DrawText(tied_str,
-                 (int)(badge_x + (badge_w - MeasureText(tied_str, 13)) * 0.5f),
-                 32, 13, DARKBLUE);
+        const char *tied_str = TextFormat("TIED 2v2 RACE! (%d items each)", my_rem);
+        DrawText(tied_str, (int)(badge_x + (badge_w - MeasureText(tied_str, 13)) * 0.5f), 32, 13, DARKBLUE);
       }
     } else {
-      const char *fin_str = (winner == my_id) ? "RACE FINISHED - YOU WON!"
-                                              : "RACE FINISHED - OPPONENT WON!";
-      DrawText(fin_str,
-               (int)(badge_x + (badge_w - MeasureText(fin_str, 13)) * 0.5f), 32,
-               13, (winner == my_id) ? DARKGREEN : MAROON);
+      int my_team = g_players[g_local_player_id - 1].team_id;
+      const char *fin_str = (winner == my_team) ? "RACE FINISHED - TEAM VICTORY!" : "RACE FINISHED - RIVAL TEAM WON!";
+      DrawText(fin_str, (int)(badge_x + (badge_w - MeasureText(fin_str, 13)) * 0.5f), 32, 13, (winner == my_team) ? DARKGREEN : MAROON);
     }
 
-    // Ping
     const char *ping_str = TextFormat("Ping: %.0f ms", g_net.rtt_ms);
     DrawText(ping_str, (int)(badge_x + badge_w + 14.0f), 20, 14, DARKGRAY);
 
-    if (now - crash_toast_time < 2.5f && crash_toast_text[0] != '\0') {
-      float toast_w = 400.0f;
-      float toast_h = 28.0f;
-      float toast_x = ((float)GetScreenWidth() - toast_w) * 0.5f;
-      float toast_y = 56.0f;
-      DrawRectangleRounded((Rectangle){toast_x, toast_y, toast_w, toast_h},
-                           0.25f, 4, (Color){255, 245, 230, 240});
-      DrawRectangleRoundedLinesEx(
-          (Rectangle){toast_x, toast_y, toast_w, toast_h}, 0.25f, 4, 1.5f,
-          ORANGE);
-      DrawText(
-          crash_toast_text,
-          (int)(toast_x + (toast_w - MeasureText(crash_toast_text, 14)) * 0.5f),
-          (int)(toast_y + 7.0f), 14, DARKGRAY);
+  } else if (g_net.mode != NET_MODE_SINGLE) {
+    // FFA Multiplayer Mode HUD
+    ShoppingList *my_slist = get_player_shopping_list(g_local_player_id);
+    DrawText(TextFormat("YOU (%d)", my_slist->len), 20, 12, 16, PLAYER_OUTLINE_COLORS[g_local_player_id - 1]);
+    for (int i = 0; i < my_slist->len; i++) {
+      Item item = items_table[my_slist->items[i]];
+      float scale = item_height / (float)item.image.height;
+      DrawTextureEx(item.image, (Vector2){20, top_y + (item_height + spacing) * i}, 0.0f, scale, WHITE);
     }
-  } else if (g_net.mode == NET_MODE_HOST && !has_remote_cart) {
+
+    int best_opp_id = -1;
+    int min_opp_rem = 999;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+      if (i != g_local_player_id - 1 && g_players[i].active) {
+        if (g_players[i].shopping_list.len < min_opp_rem) {
+          min_opp_rem = g_players[i].shopping_list.len;
+          best_opp_id = i + 1;
+        }
+      }
+    }
+
+    if (best_opp_id != -1) {
+      ShoppingList *opp_slist = &g_players[best_opp_id - 1].shopping_list;
+      const char *opp_hdr = TextFormat("P%d (%d items)", best_opp_id, opp_slist->len);
+      int opp_hdr_w = MeasureText(opp_hdr, 16);
+      DrawText(opp_hdr, GetScreenWidth() - opp_hdr_w - 20, 12, 16, PLAYER_OUTLINE_COLORS[best_opp_id - 1]);
+      for (int i = 0; i < opp_slist->len; i++) {
+        Item opp_item = items_table[opp_slist->items[i]];
+        float scale = item_height / (float)opp_item.image.height;
+        float drawn_w = (float)opp_item.image.width * scale;
+        float opp_x = (float)GetScreenWidth() - drawn_w - 20.0f;
+        DrawTextureEx(opp_item.image, (Vector2){opp_x, top_y + (item_height + spacing) * i}, 0.0f, scale, WHITE);
+      }
+    }
+
+    float badge_w = 380.0f;
+    float badge_h = 44.0f;
+    float badge_x = ((float)GetScreenWidth() - badge_w) * 0.5f;
+    DrawRectangleRounded((Rectangle){badge_x, 8.0f, badge_w, badge_h}, 0.25f, 4, (Color){255, 255, 255, 230});
+    DrawRectangleRoundedLinesEx((Rectangle){badge_x, 8.0f, badge_w, badge_h}, 0.25f, 4, 2.0f, DARKGRAY);
+
+    const char *time_str = TextFormat("TIME: %.3f s", ela_time);
+    DrawText(time_str, (int)(badge_x + (badge_w - MeasureText(time_str, 18)) * 0.5f), 12, 18, BLACK);
+
+    if (winner == 0) {
+      if (best_opp_id != -1) {
+        if (my_slist->len < min_opp_rem) {
+          int lead = min_opp_rem - my_slist->len;
+          const char *lead_str = TextFormat("YOU'RE LEADING by %d item%s!", lead, lead > 1 ? "s" : "");
+          DrawText(lead_str, (int)(badge_x + (badge_w - MeasureText(lead_str, 13)) * 0.5f), 32, 13, DARKGREEN);
+        } else if (my_slist->len > min_opp_rem) {
+          int behind = my_slist->len - min_opp_rem;
+          const char *behind_str = TextFormat("P%d LEADING by %d item%s!", best_opp_id, behind, behind > 1 ? "s" : "");
+          DrawText(behind_str, (int)(badge_x + (badge_w - MeasureText(behind_str, 13)) * 0.5f), 32, 13, MAROON);
+        } else {
+          const char *tied_str = TextFormat("TIED RACE! (%d items each)", my_slist->len);
+          DrawText(tied_str, (int)(badge_x + (badge_w - MeasureText(tied_str, 13)) * 0.5f), 32, 13, DARKBLUE);
+        }
+      }
+    } else {
+      const char *fin_str = (winner == g_local_player_id) ? "RACE FINISHED - YOU WON!"
+                                                          : TextFormat("RACE FINISHED - P%d WON!", winner);
+      DrawText(fin_str, (int)(badge_x + (badge_w - MeasureText(fin_str, 13)) * 0.5f), 32, 13, (winner == g_local_player_id) ? DARKGREEN : MAROON);
+    }
+
+    const char *ping_str = TextFormat("Ping: %.0f ms", g_net.rtt_ms);
+    DrawText(ping_str, (int)(badge_x + badge_w + 14.0f), 20, 14, DARKGRAY);
+
+  } else {
+    // Singleplayer HUD (original layout)
+    ShoppingList *my_slist = get_player_shopping_list(1);
+    for (int i = 0; i < my_slist->len; i++) {
+      Item item = items_table[my_slist->items[i]];
+      float scale = item_height / (float)item.image.height;
+      DrawTextureEx(item.image, (Vector2){20, top_y + (item_height + spacing) * i}, 0.0f, scale, WHITE);
+    }
+
+    const char *string = TextFormat("%.3f", ela_time);
+    const char *string_zeros = TextFormat("%.3f", floorf(ela_time));
+    int string_width_zeros = MeasureText(string_zeros, 30);
+    DrawText(string, GetScreenWidth() - string_width_zeros - 10,
+             GetScreenHeight() - 40, 30, BLACK);
+  }
+
+  // Crash toast notification
+  if (now - crash_toast_time < 2.5f && crash_toast_text[0] != '\0') {
+    float toast_w = 400.0f;
+    float toast_h = 28.0f;
+    float toast_x = ((float)GetScreenWidth() - toast_w) * 0.5f;
+    float toast_y = 56.0f;
+    DrawRectangleRounded((Rectangle){toast_x, toast_y, toast_w, toast_h},
+                         0.25f, 4, (Color){255, 245, 230, 240});
+    DrawRectangleRoundedLinesEx(
+        (Rectangle){toast_x, toast_y, toast_w, toast_h}, 0.25f, 4, 1.5f,
+        ORANGE);
+    DrawText(
+        crash_toast_text,
+        (int)(toast_x + (toast_w - MeasureText(crash_toast_text, 14)) * 0.5f),
+        (int)(toast_y + 7.0f), 14, DARKGRAY);
+  }
+
+  // Host waiting banner
+  if (g_net.mode == NET_MODE_HOST && !has_remote_cart) {
     float badge_w = 460.0f;
     float badge_x = ((float)GetScreenWidth() - badge_w) * 0.5f;
     DrawRectangleRounded((Rectangle){badge_x, 8.0f, badge_w, 36.0f}, 0.25f, 4,
@@ -1768,31 +2243,24 @@ static void DrawTickFrame(void) {
                                 0.25f, 4, 1.5f, DARKBLUE);
 #if defined(__EMSCRIPTEN__)
     const char *wait_str =
-        TextFormat("ROOM %s - Waiting for opponent to join...",
+        TextFormat("ROOM %s - Waiting for players to join...",
                    g_net.remote_ip);
 #else
     const char *wait_str =
-        TextFormat("HOSTING (port %d) - Waiting for Player 2 to join...",
+        TextFormat("HOSTING (port %d) - Waiting for players to join...",
                    g_net.remote_port);
 #endif
     DrawText(wait_str,
              (int)(badge_x + (badge_w - MeasureText(wait_str, 15)) * 0.5f), 18,
              15, DARKBLUE);
-  } else {
-    // Singleplayer timer (original bottom-right position and style)
-    const char *string = TextFormat("%.3f", ela_time);
-    const char *string_zeros = TextFormat("%.3f", floorf(ela_time));
-    int string_width_zeros = MeasureText(string_zeros, 30);
-    DrawText(string, GetScreenWidth() - string_width_zeros - 10,
-             GetScreenHeight() - 40, 30, BLACK);
   }
 
   // --- GAME OVER / VICTORY / DEFEAT MODAL ---
   if (winner != 0) {
     DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(),
                   (Color){0, 0, 0, 130});
-    float mw = 480.0f;
-    float mh = 230.0f;
+    float mw = 520.0f;
+    float mh = 240.0f;
     float mx = ((float)GetScreenWidth() - mw) * 0.5f;
     float my = ((float)GetScreenHeight() - mh) * 0.5f;
 
@@ -1810,11 +2278,44 @@ static void DrawTickFrame(void) {
       const char *t_str = TextFormat("Final Time: %.3f seconds", winning_time);
       DrawText(t_str, (int)(mx + (mw - MeasureText(t_str, 20)) * 0.5f),
                (int)(my + 115), 20, BLACK);
-      const char *rem_str = "Press [R] to Play Again  |  [ESC] Lobby";
+      const char *rem_str = "Press [R] or [SPACE] to Play Again  |  [ESC] Lobby";
       DrawText(rem_str, (int)(mx + (mw - MeasureText(rem_str, 18)) * 0.5f),
-               (int)(my + 165), 18, DARKBLUE);
+               (int)(my + 172), 18, DARKBLUE);
+    } else if (g_config.game_mode == GAME_MODE_2V2) {
+      int my_team = g_players[g_local_player_id - 1].team_id;
+      bool won = (winner == my_team);
+      Color border_col = won ? GOLD : MAROON;
+      DrawRectangleRoundedLinesEx((Rectangle){mx, my, mw, mh}, 0.10f, 4, 4.0f,
+                                  border_col);
+
+      const char *title = won ? "TEAM VICTORY!" : "DEFEAT!";
+      Color title_col = won ? GOLD : RED;
+      DrawText(title, (int)(mx + (mw - MeasureText(title, 38)) * 0.5f),
+               (int)(my + 24), 38, title_col);
+
+      const char *team_str = (winner == 1) ? "Team Blue" : "Team Red";
+      const char *sub = won ? TextFormat("Your team (%s) completed the shopping list first!", team_str)
+                            : TextFormat("Rival %s completed their shopping list first!", team_str);
+      Color sub_col = won ? DARKGREEN : DARKGRAY;
+      DrawText(sub, (int)(mx + (mw - MeasureText(sub, 17)) * 0.5f),
+               (int)(my + 74), 17, sub_col);
+
+      const char *t_str =
+          TextFormat("Winning Time: %.3f seconds", winning_time);
+      DrawText(t_str, (int)(mx + (mw - MeasureText(t_str, 20)) * 0.5f),
+               (int)(my + 116), 20, BLACK);
+
+      const char *rem_str = "";
+      if (g_net.mode == NET_MODE_HOST) {
+        rem_str = "Press [R] to Start Rematch  |  [ESC] Lobby";
+      } else {
+        rem_str = rematch_requested ? "Rematch Requested! Waiting for Host...  |  [ESC] Lobby"
+                                    : "Press [R] to Request Rematch  |  [ESC] Lobby";
+      }
+      DrawText(rem_str, (int)(mx + (mw - MeasureText(rem_str, 18)) * 0.5f),
+               (int)(my + 172), 18, DARKBLUE);
     } else {
-      bool won = (winner == my_id);
+      bool won = (winner == g_local_player_id);
       Color border_col = won ? GOLD : MAROON;
       DrawRectangleRoundedLinesEx((Rectangle){mx, my, mw, mh}, 0.10f, 4, 4.0f,
                                   border_col);
@@ -1825,15 +2326,15 @@ static void DrawTickFrame(void) {
                (int)(my + 24), 38, title_col);
 
       const char *sub = won ? "You finished your shopping list first!"
-                            : "Opponent finished their shopping list first!";
+                            : TextFormat("Player %d finished their shopping list first!", winner);
       Color sub_col = won ? DARKGREEN : DARKGRAY;
       DrawText(sub, (int)(mx + (mw - MeasureText(sub, 17)) * 0.5f),
-               (int)(my + 72), 17, sub_col);
+               (int)(my + 74), 17, sub_col);
 
       const char *t_str =
           TextFormat("Winning Time: %.3f seconds", winning_time);
       DrawText(t_str, (int)(mx + (mw - MeasureText(t_str, 20)) * 0.5f),
-               (int)(my + 112), 20, BLACK);
+               (int)(my + 116), 20, BLACK);
 
       const char *rem_str = "";
       if (g_net.mode == NET_MODE_HOST) {
@@ -1843,7 +2344,7 @@ static void DrawTickFrame(void) {
                                     : "Press [R] to Request Rematch  |  [ESC] Lobby";
       }
       DrawText(rem_str, (int)(mx + (mw - MeasureText(rem_str, 18)) * 0.5f),
-               (int)(my + 162), 18, DARKBLUE);
+               (int)(my + 172), 18, DARKBLUE);
     }
   }
 
@@ -1884,6 +2385,8 @@ int main(int argc, char **argv) {
   int port = DEFAULT_NET_PORT;
   const char *join_ip = NULL;
   NetMode mode = NET_MODE_SINGLE;
+  int cli_player_id = 0;
+  int cli_team_id = 0;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--host") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -1900,6 +2403,25 @@ int main(int argc, char **argv) {
       }
       if (i + 1 < argc && argv[i + 1][0] != '-') {
         port = atoi(argv[++i]);
+      }
+    } else if (strcmp(argv[i], "--2v2") == 0 || strcmp(argv[i], "--teams") == 0) {
+      g_config.game_mode = GAME_MODE_2V2;
+    } else if (strcmp(argv[i], "--ffa") == 0) {
+      g_config.game_mode = GAME_MODE_FFA;
+    } else if (strcmp(argv[i], "--players") == 0) {
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        int p = atoi(argv[++i]);
+        if (p < 2) p = 2;
+        if (p > MAX_PLAYERS) p = MAX_PLAYERS;
+        g_config.max_players = (uint8_t)p;
+      }
+    } else if (strcmp(argv[i], "--player") == 0) {
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        cli_player_id = atoi(argv[++i]);
+      }
+    } else if (strcmp(argv[i], "--team") == 0) {
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        cli_team_id = atoi(argv[++i]);
       }
     } else if (strcmp(argv[i], "--size") == 0) {
       if (i + 1 < argc && argv[i + 1][0] != '-') {
@@ -1990,6 +2512,12 @@ int main(int argc, char **argv) {
           "  ./main --host [port]        Host multiplayer game (default: %d)\n",
           DEFAULT_NET_PORT);
       printf("  ./main --join <IP> [port]   Join game over Tailscale / LAN\n");
+      printf("Game Mode Options:\n");
+      printf("  --2v2, --teams              2v2 Team mode (cooperate on shared shopping list)\n");
+      printf("  --ffa                       Free-for-all mode (individual shopping lists)\n");
+      printf("  --players <2..4>            Max players in room (default: 4)\n");
+      printf("  --player <1..4>             Set local player slot ID (default: 1 host/solo, 2 client)\n");
+      printf("  --team <1..2>               Set local team (1=Blue, 2=Red)\n");
       printf("Room Customization Options (for host & singleplayer):\n");
       printf("  --size <W> [H]              Supermarket grid dimensions 16..36 (default: 24)\n");
       printf("  --items <N>                 Shopping list count 1..16 (default: 5)\n");
@@ -2029,12 +2557,20 @@ int main(int argc, char **argv) {
       120.0f,
   };
 
+  if (cli_player_id >= 1 && cli_player_id <= MAX_PLAYERS) {
+    g_local_player_id = cli_player_id;
+  }
+
   if (mode == NET_MODE_HOST) {
     start_host(NULL, NULL, port);
   } else if (mode == NET_MODE_CLIENT) {
     start_client(join_ip, NULL, port);
   } else {
     start_singleplayer();
+  }
+
+  if (cli_team_id == 1 || cli_team_id == 2) {
+    g_players[g_local_player_id - 1].team_id = (uint8_t)cli_team_id;
   }
 
   while (!WindowShouldClose()) {

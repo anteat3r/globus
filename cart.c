@@ -127,6 +127,14 @@ void cart_recalculate_mass_inertia(Cart *cart) {
   cart->mom_inertia = total_inertia;
 }
 
+void cart_set_mass(Cart *cart, float base_mass) {
+  if (base_mass < 5.0f)
+    base_mass = 35.0f;
+  cart->base_mass = base_mass;
+  cart->base_mom_inertia = 0.6f * (base_mass / 35.0f);
+  cart_recalculate_mass_inertia(cart);
+}
+
 void cart_apply_force(Cart *cart, Vector2 rel_pos, Vector2 force, float delta) {
   if (cart->mass <= EPSILON || delta <= 0.0f)
     return;
